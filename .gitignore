@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Local run artifacts
+data/raw/*
+data/processed/*
+logs/agent/*.md
+!data/raw/README.md
+!data/processed/README.md
+!logs/agent/README.md
+
+# Calibration output can contain machine-specific generated files.
+calibration/*.npz
+calibration/*.json
+calibration/*.yaml
+!calibration/README.md
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+

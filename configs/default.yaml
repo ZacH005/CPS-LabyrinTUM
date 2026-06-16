@@ -1,0 +1,40 @@
+camera:
+  device_index: 0
+  width: 640
+  height: 480
+  fps: 60
+  flip_horizontal: false
+  flip_vertical: false
+
+serial:
+  port: "/dev/ttyACM0"
+  baudrate: 115200
+  timeout_s: 0.2
+
+servo:
+  yaw_channel: 0
+  pitch_channel: 1
+  neutral_us: 1500
+  min_us: 1200
+  max_us: 1800
+  max_delta_us_per_command: 20
+  watchdog_ms: 500
+
+vision:
+  # Reflective silver is difficult; start with bright-blob detection and tune on real frames.
+  min_blob_area_px: 25
+  max_blob_area_px: 5000
+  threshold_value: 220
+  blur_kernel: 5
+
+control:
+  lookahead_mm: 25.0
+  kp: 0.015
+  kd: 0.006
+  max_command: 1.0
+
+maze:
+  width_mm: 335.0
+  height_mm: 335.0
+  path_file: "configs/example_path.csv"
+
