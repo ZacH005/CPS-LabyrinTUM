@@ -10,15 +10,23 @@ class ArucoDetection:
     ids : list | None = None
     rejected : list | None = None
 
+@dataclass(frozen=True)
+class CharucoDetection:
+    found: bool
+    charuco_corners: np.ndarray | None = None
+    charuco_ids: np.ndarray | None = None
+    marker_corners: list | None = None
+    marker_ids: np.ndarray | None = None
+
 class ArucoDetector:
     def __init__(self):
 
         if version.parse(cv2.__version__) >= version.parse("4.7.0"):
-            self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_100)
             self.params = cv2.aruco.DetectorParameters()
             self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.params)
         else:
-            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_100)
+            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_100)
             self.params = cv2.aruco.DetectorParameters_create()
 
         self.params.minMarkerPerimeterRate = 0.01
@@ -61,7 +69,84 @@ class ArucoDetector:
 
         return output
     
+class CharucoDetector:
+    def __init__(
+        self,
+        squares_x=5,
+        squares_y=5,
+        square_length=0.12,
+        marker_length=0.09,
+    ):
+        self.charuco_dict = cv2.aruco.getPredefinedDictionary(
+            cv2.aruco.DICT_6X6_100
+        )
 
+        self.params = cv2.aruco.DetectorParameters()
+        self.params.minMarkerPerimeterRate = 0.01
+        self.params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 
+        self.charuco_params = cv2.aruco.CharucoParameters()
 
+        self.board = cv2.aruco.CharucoBoard(
+            (squares_x, squares_y),
+            square_length,
+            marker_length,
+            self.charuco_dict,
+        )
 
+        self.detector = cv2.aruco.CharucoDetector(
+            self.board,
+            self.charuco_params,
+            self.params,
+        )
+
+    def detect(self, image: np.ndarray) -> CharucoDetection:
+
+        if version.parse(cv2.__version__) >= version.parse("4.7.0"):
+
+            (charuco_corners,charuco_ids,marker_corners,marker_ids) = self.detector.detectBoard(image)
+
+        else:
+            marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(image,self.charuco_dict,parameters=self.params)
+
+            charuco_corners = None
+            charuco_ids = None
+
+            if marker_ids is not None and len(marker_ids) > 0:
+
+                _, charuco_corners, charuco_ids = (
+                    cv2.aruco.interpolateCornersCharuco(
+                        marker_corners,
+                        marker_ids,
+                        image,
+                        self.board
+                    )
+                )
+
+        return CharucoDetection(
+            found=charuco_ids is not None and len(charuco_ids) > 0,
+            charuco_corners=charuco_corners,
+            charuco_ids=charuco_ids,
+            marker_corners=marker_corners,
+            marker_ids=marker_ids
+        )
+    
+    @staticmethod
+    def draw_detection(image_bgr: np.ndarray, detection: CharucoDetection) -> np.ndarray:
+        output = image_bgr.copy()
+        if detection.marker_ids is not None:
+            cv2.aruco.drawDetectedMarkers(
+                output,
+                detection.marker_corners,
+                detection.marker_ids,
+            )
+
+        if detection.charuco_ids is not None:
+            cv2.aruco.drawDetectedCornersCharuco(
+                output,
+                detection.charuco_corners,
+                detection.charuco_ids,
+                (0, 0, 255),
+            )
+
+        return output
