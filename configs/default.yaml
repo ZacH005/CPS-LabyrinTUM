@@ -7,7 +7,7 @@ camera:
   flip_vertical: false
 
 serial:
-  port: "/dev/cu.usbmodem1101"
+  port: "/dev/cu.usbmodem101"
   baudrate: 500000
   timeout_s: 0.2
 
@@ -43,7 +43,7 @@ control:
   max_command: 1.0
 
 maze:
-  width_mm: 335.0
-  height_mm: 335.0
+  width_mm: 3220
+  height_mm: 2820
   path_file: "configs/example_path.csv"
 
