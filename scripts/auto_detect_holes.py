@@ -118,6 +118,7 @@ def main() -> None:
     def on_mouse(event: int, x: int, y: int, *_rest) -> None:
         origin, scale = frame_info["origin"], frame_info["scale"]
         x_mm, y_mm = x / scale + origin[0], y / scale + origin[1]
+        frame_info["mouse_mm"] = (x_mm, y_mm)
         if event == cv2.EVENT_LBUTTONDOWN:
             merged = holes + manual_added
             if not merged:
@@ -159,10 +160,22 @@ def main() -> None:
                 cv2.circle(view, mm_to_px(x_mm, y_mm), int(r_mm * scale), (0, 0, 255), 2)
             for x_mm, y_mm, r_mm in manual_added:
                 cv2.circle(view, mm_to_px(x_mm, y_mm), int(r_mm * scale), (255, 0, 255), 2)
+            # frame sanity check: the (0,0)-(w,h) board outline should hug the
+            # play area if the active calibration and maze dims are right
+            try:
+                bw = float(config.maze["width_mm"])
+                bh = float(config.maze["height_mm"])
+                cv2.rectangle(view, mm_to_px(0.0, 0.0), mm_to_px(bw, bh),
+                              (255, 255, 0), 1)
+            except (KeyError, TypeError, ValueError):
+                pass
             count = len(holes) + len(manual_added)
+            mx, my = frame_info.get("mouse_mm", (0.0, 0.0))
             cv2.putText(view, f"holes: {count}  (auto {len(holes)} + manual "
                         f"{len(manual_added)})  s=save", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(view, f"mouse: {mx:.0f}, {my:.0f} mm", (10, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             cv2.imshow(WINDOW, view)
             cv2.imshow("threshold mask", mask)
 

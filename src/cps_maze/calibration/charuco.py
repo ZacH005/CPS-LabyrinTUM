@@ -10,8 +10,14 @@ CHARUCO_SQUARES_Y = 5
 CHARUCO_SQUARE_LENGTH_MM = 12.0
 CHARUCO_MARKER_LENGTH_MM = 9.0
 
-# Maze-plane placement of the printed board, measured in millimeters.
-CHARUCO_BOARD_TOP_LEFT_MM = np.array([-53.0, 167.0], dtype=float)
+# Maze-plane position of the printed pattern's outer top-left corner, in the
+# maze frame (origin = play-area top-left corner, x right, y down - same
+# convention as the corner-click calibration). The pattern must lie FLAT on
+# the play surface, axis-aligned with the board edges. Re-measure whenever it
+# moves, or override per run with calibrate_charuco_homography.py
+# --pattern-x-mm / --pattern-y-mm. The (0, 0) default anchors the frame at the
+# pattern itself, which is still a valid metric frame for all tools.
+CHARUCO_BOARD_TOP_LEFT_MM = np.array([0.0, 0.0], dtype=float)
 
 
 @dataclass(frozen=True)
@@ -47,9 +53,11 @@ def board_charuco_corner_points_to_maze_mm(
     board_top_left_mm: np.ndarray | None = None,
 ) -> np.ndarray:
     board_top_left_mm = CHARUCO_BOARD_TOP_LEFT_MM if board_top_left_mm is None else board_top_left_mm
+    # y grows DOWN, matching the corner-click calibration frame so both
+    # calibrations produce interchangeable coordinates.
     maze_points = np.empty_like(board_points_mm, dtype=np.float32)
     maze_points[:, 0] = board_top_left_mm[0] + board_points_mm[:, 0]
-    maze_points[:, 1] = board_top_left_mm[1] - board_points_mm[:, 1]
+    maze_points[:, 1] = board_top_left_mm[1] + board_points_mm[:, 1]
     return maze_points
 
 
