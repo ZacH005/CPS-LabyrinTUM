@@ -1,8 +1,8 @@
 camera:
-  device_index: 1
-  width: 640
-  height: 480
-  fps: 60
+  device_index: 0  # per-machine: 1 on the Windows lab PC
+  width: 1280
+  height: 800
+  fps: 120
   flip_horizontal: false
   flip_vertical: false
 
@@ -25,7 +25,16 @@ vision:
   min_blob_area_px: 25
   max_blob_area_px: 5000
   threshold_value: 220
+  use_otsu: false
+  clahe_clip: 2.0
+  morph_kernel: 5
   blur_kernel: 5
+  # debug overlay for visualizing preprocessing and candidates
+  debug_overlay: false
+  debug_overlay_every_n: 1
+  debug_start_stage: "binary"
+  save_debug: false
+  smoothing_alpha: 0.6
 
 control:
   lookahead_mm: 25.0
@@ -34,7 +43,9 @@ control:
   max_command: 1.0
 
 maze:
-  width_mm: 335.0
-  height_mm: 335.0
+  # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,
+  # assumed to mean 322.0x282.0 mm.
+  width_mm: 322.0
+  height_mm: 282.0
   path_file: "configs/example_path.csv"
 
