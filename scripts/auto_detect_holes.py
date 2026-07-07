@@ -66,8 +66,14 @@ def detect_holes(
     max_radius_mm: float,
     origin_mm: np.ndarray | None = None,
     scale: float = SCALE_PX_PER_MM,
+    board_mm: tuple[float, float] | None = None,
+    board_margin_mm: float = 5.0,
 ) -> tuple[list[tuple[float, float, float]], np.ndarray]:
-    """Returns (holes as (x_mm, y_mm, r_mm), binary debug mask)."""
+    """Returns (holes as (x_mm, y_mm, r_mm), binary debug mask).
+
+    If board_mm=(width, height) is given, detections outside the board
+    rectangle (plus margin) are rejected.
+    """
     if origin_mm is None:
         origin_mm = np.zeros(2)
     gray = cv2.cvtColor(topdown_bgr, cv2.COLOR_BGR2GRAY)
@@ -80,7 +86,9 @@ def detect_holes(
     max_area = np.pi * (max_radius_mm * scale) ** 2
 
     holes: list[tuple[float, float, float]] = []
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # RETR_LIST, not RETR_EXTERNAL: at high thresholds the board border forms
+    # a closed white ring, and EXTERNAL would drop every hole enclosed by it.
+    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         area = cv2.contourArea(contour)
         if not min_area <= area <= max_area:
@@ -92,8 +100,17 @@ def detect_holes(
         if circularity < 0.65:  # walls/bars and line fragments are elongated
             continue
         (x_px, y_px), r_px = cv2.minEnclosingCircle(contour)
-        holes.append((x_px / scale + origin_mm[0], y_px / scale + origin_mm[1],
-                      r_px / scale))
+        x_mm = x_px / scale + origin_mm[0]
+        y_mm = y_px / scale + origin_mm[1]
+        if board_mm is not None:
+            if not (-board_margin_mm <= x_mm <= board_mm[0] + board_margin_mm
+                    and -board_margin_mm <= y_mm <= board_mm[1] + board_margin_mm):
+                continue
+        # de-duplicate: RETR_LIST can yield outer+inner contours of one blob
+        if any(np.hypot(x_mm - hx, y_mm - hy) < max(r_px / scale, hr)
+               for hx, hy, hr in holes):
+            continue
+        holes.append((x_mm, y_mm, r_px / scale))
     return holes, mask
 
 
@@ -109,6 +126,10 @@ def main() -> None:
 
     config = load_config(args.config)
     homography = Homography.load(args.homography)
+    try:
+        board_mm = (float(config.maze["width_mm"]), float(config.maze["height_mm"]))
+    except (KeyError, TypeError, ValueError):
+        board_mm = None
 
     holes: list[tuple[float, float, float]] = []
     manual_added: list[tuple[float, float, float]] = []
@@ -152,7 +173,7 @@ def main() -> None:
             if threshold != last_threshold:
                 holes, mask = detect_holes(topdown, threshold,
                                            args.min_radius_mm, args.max_radius_mm,
-                                           origin, scale)
+                                           origin, scale, board_mm)
                 last_threshold = threshold
 
             view = topdown.copy()
