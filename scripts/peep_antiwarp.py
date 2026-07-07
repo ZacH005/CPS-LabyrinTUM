@@ -9,7 +9,7 @@ from cps_maze.camera import CameraCapture
 from cps_maze.config import load_config
 from cps_maze.vision.ball_tracker import BrightBlobBallTracker
 
-def build_display_warp(image_to_board_mm, mm_per_px=2.0, width_mm=3220, height_mm=2820):
+def build_display_warp(image_to_board_mm, mm_per_px=2.0, width_mm=322.0, height_mm=282.0):
     board_to_display = np.array([
         [1.0 / mm_per_px, 0, 0],
         [0, -1.0 / mm_per_px, height_mm / mm_per_px],

@@ -131,8 +131,8 @@ def main() -> None:
     parser.add_argument("--homography", default="calibration/board_homography.npz")
     parser.add_argument("--intrinsics", default="calibration/camera_intrinsics.npz")
     parser.add_argument("--mm-per-px", type=float, default=2.0)
-    parser.add_argument("--board-width-mm", type=float, default=3220.0)
-    parser.add_argument("--board-height-mm", type=float, default=2820.0)
+    parser.add_argument("--board-width-mm", type=float, default=322.00)
+    parser.add_argument("--board-height-mm", type=float, default=282.00)
     args = parser.parse_args()
 
     config = load_config(args.config)
