@@ -17,6 +17,19 @@ class Homography:
         x_mm, y_mm = transformed[0, 0]
         return float(x_mm), float(y_mm)
 
+    def board_point_to_image_px(self, x_mm: float, y_mm: float) -> tuple[float, float]:
+        inverse = np.linalg.inv(self.image_to_board)
+        point = np.array([[[x_mm, y_mm]]], dtype=np.float32)
+        transformed = cv2.perspectiveTransform(point, inverse)
+        x_px, y_px = transformed[0, 0]
+        return float(x_px), float(y_px)
+
+    def board_points_to_image_px(self, points_mm: np.ndarray) -> np.ndarray:
+        """Vectorized board mm -> image px for overlay drawing. points_mm shape (N, 2)."""
+        inverse = np.linalg.inv(self.image_to_board)
+        pts = points_mm.reshape(-1, 1, 2).astype(np.float32)
+        return cv2.perspectiveTransform(pts, inverse).reshape(-1, 2)
+
     def save(self, path: str | Path) -> None:
         np.savez(Path(path), image_to_board=self.image_to_board)
 

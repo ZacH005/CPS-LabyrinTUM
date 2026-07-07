@@ -1,5 +1,5 @@
 camera:
-  device_index: 0
+  device_index: 0  # per-machine: 1 on the Windows lab PC
   width: 1280
   height: 800
   fps: 120
@@ -43,7 +43,8 @@ control:
   max_command: 1.0
 
 maze:
+  # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,
+  # assumed to mean 322.0x282.0 mm.
   width_mm: 322.0
   height_mm: 282.0
   path_file: "configs/example_path.csv"
-
