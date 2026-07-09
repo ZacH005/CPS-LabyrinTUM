@@ -129,6 +129,12 @@ def main() -> None:
     lookahead_mm = (args.lookahead if args.lookahead is not None
                     else float(config.control["lookahead_mm"]))
 
+    if 0.0 < max_command < stall_kick:
+        print(f"WARNING: --max-command {max_command} is BELOW stall_kick "
+              f"{stall_kick}. The anti-stiction kick gets clipped away and the "
+              f"ball may never move. Use max-command >= {stall_kick}, or lower "
+              f"stall_kick deliberately.")
+
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
