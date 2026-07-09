@@ -28,7 +28,12 @@ from cps_maze.calibration.homography import Homography
 from cps_maze.camera import CameraCapture
 from cps_maze.config import load_config
 from cps_maze.control.axis_map import AxisMap
-from cps_maze.control.pid import PathFollower, PathFollowerConfig
+from cps_maze.control.pid import (
+    PathFollower,
+    PathFollowerConfig,
+    VelocityFollowerConfig,
+    VelocityPathFollower,
+)
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
 from cps_maze.planning.path import WaypointPath
@@ -95,6 +100,11 @@ def main() -> None:
     parser.add_argument("--stall-kick", type=float, default=None,
                         help="Min command magnitude when the ball is stalled off-target "
                              "(the tilt that breaks static friction, ~0.3)")
+    parser.add_argument("--controller", choices=["velocity", "position"], default=None,
+                        help="velocity (default): track a speed along the path tangent, "
+                             "brakes into corners; position: legacy lookahead PD")
+    parser.add_argument("--v-max", type=float, default=None,
+                        help="Cruise speed mm/s for the velocity controller")
     parser.add_argument("--max-command", type=float, default=None,
                         help="Cap |servo command|; start low (e.g. 0.2)")
     parser.add_argument("--lookahead", type=float, default=None, help="Lookahead mm")
@@ -135,6 +145,9 @@ def main() -> None:
               f"ball may never move. Use max-command >= {stall_kick}, or lower "
               f"stall_kick deliberately.")
 
+    mode = args.controller or str(config.control.get("mode", "velocity")).lower()
+    v_max = (args.v_max if args.v_max is not None
+             else float(config.control.get("v_max_mm_s", 45.0)))
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
@@ -142,6 +155,18 @@ def main() -> None:
         stall_speed_mm_s=float(config.control.get("stall_speed_mm_s", 8.0)),
         stall_dist_mm=float(config.control.get("stall_dist_mm", 8.0)),
     ))
+    velocity_follower = VelocityPathFollower(VelocityFollowerConfig(
+        v_max_mm_s=v_max,
+        min_speed_frac=float(config.control.get("min_speed_frac", 0.25)),
+        corner_slow_deg=float(config.control.get("corner_slow_deg", 110.0)),
+        k_lat=float(config.control.get("k_lat", 2.5)),
+        lat_v_max_mm_s=float(config.control.get("lat_v_max_mm_s", 30.0)),
+        k_vel=float(config.control.get("k_vel", 0.010)),
+        max_command=max_command,
+        stall_kick=stall_kick,
+        stall_speed_mm_s=float(config.control.get("stall_speed_mm_s", 8.0)),
+    ))
+    print(f"controller: {mode}" + (f" (v_max {v_max:.0f} mm/s)" if mode == "velocity" else ""))
     estimator = LowPassVelocityEstimator()
     total_length = float(path.cumulative_lengths[-1])
 
@@ -248,13 +273,26 @@ def main() -> None:
                     if progress_est is not None and cross > 35.0:
                         progress, cross = path.nearest_progress_and_distance_mm(board_xy)
                     progress_est = progress
-                    target = path.point_at_progress_mm(progress + lookahead_mm)
 
                     dt_s = (frame.timestamp_s - prev_timestamp_s
                             if prev_timestamp_s is not None else 0.0)
                     prev_timestamp_s = frame.timestamp_s
-                    board_cmd = follower.command(state.position_mm, state.velocity_mm_s,
-                                                 target, dt_s)
+
+                    if mode == "velocity":
+                        path_point = path.point_at_progress_mm(progress)
+                        tangent = path.tangent_at_progress_mm(progress)
+                        turn_deg = path.heading_change_deg(progress)
+                        board_cmd, v_des = velocity_follower.command(
+                            state.position_mm, state.velocity_mm_s,
+                            path_point, tangent, turn_deg, dt_s,
+                        )
+                        # overlay: aim marker a half-second of travel ahead
+                        target = state.position_mm + 0.5 * v_des
+                    else:
+                        target = path.point_at_progress_mm(progress + lookahead_mm)
+                        board_cmd = follower.command(state.position_mm,
+                                                     state.velocity_mm_s,
+                                                     target, dt_s)
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -max_command, max_command)
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
 

@@ -97,3 +97,26 @@ class WaypointPath:
     def target_ahead(self, position_mm: np.ndarray, lookahead_mm: float) -> np.ndarray:
         progress = self.nearest_progress_mm(position_mm)
         return self.point_at_progress_mm(progress + lookahead_mm)
+
+    def tangent_at_progress_mm(self, progress_mm: float, delta_mm: float = 3.0) -> np.ndarray:
+        """Unit direction of travel along the path at the given progress."""
+        p0 = self.point_at_progress_mm(progress_mm)
+        p1 = self.point_at_progress_mm(progress_mm + delta_mm)
+        d = p1 - p0
+        n = float(np.linalg.norm(d))
+        if n < 1e-9:  # at the very end: look backward instead
+            p0 = self.point_at_progress_mm(progress_mm - delta_mm)
+            d = p1 - p0
+            n = float(np.linalg.norm(d))
+            if n < 1e-9:
+                return np.array([1.0, 0.0])
+        return d / n
+
+    def heading_change_deg(self, progress_mm: float, span_mm: float = 30.0) -> float:
+        """How sharply the path turns over the next span_mm (0 = straight).
+
+        Used to slow the ball down before corners."""
+        t0 = self.tangent_at_progress_mm(progress_mm)
+        t1 = self.tangent_at_progress_mm(progress_mm + span_mm)
+        cos_angle = float(np.clip(np.dot(t0, t1), -1.0, 1.0))
+        return float(np.degrees(np.arccos(cos_angle)))

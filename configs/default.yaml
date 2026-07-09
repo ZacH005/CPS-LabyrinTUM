@@ -35,7 +35,7 @@ vision:
   tracker: "pipeline"
   # Specular gate for the pipeline tracker: ball glints ~254, holes ~150-215.
   # Lower this if lighting is dim and the ball stops being detected.
-  min_specular: 254
+  min_specular: 241
   # Optional confusers/ROI JSON from `pipeline.py --calibrate`; loaded if present.
   confusers_file: "calibration/live_confusers.json"
   # Demo tracking policy: use click-to-seed and reject implausible jumps
@@ -70,6 +70,16 @@ vision:
   smoothing_alpha: 0.6
 
 control:
+  # "velocity" (default): track a target speed along the path tangent; tilt
+  # corrects velocity error, so the board automatically brakes the ball
+  # before corners. "position": legacy lookahead PD.
+  mode: "velocity"
+  v_max_mm_s: 45.0       # cruise speed on straights; raise only when reliable
+  min_speed_frac: 0.25
+  corner_slow_deg: 110.0
+  k_lat: 2.5             # pull toward centerline (per mm of cross-track)
+  lat_v_max_mm_s: 30.0
+  k_vel: 0.010           # tilt per mm/s of velocity error
   lookahead_mm: 18.0
   kp: 0.015
   kd: 0.006
