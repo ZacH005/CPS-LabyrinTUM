@@ -35,7 +35,7 @@ vision:
   tracker: "pipeline"
   # Specular gate for the pipeline tracker: ball glints ~254, holes ~150-215.
   # Lower this if lighting is dim and the ball stops being detected.
-  min_specular: 100
+  min_specular: 240
   # Optional confusers/ROI JSON from `pipeline.py --calibrate`; loaded if present.
   confusers_file: "calibration/live_confusers.json"
   # Reflective silver is difficult; start with bright-blob detection and tune on real frames.
@@ -54,10 +54,20 @@ vision:
   smoothing_alpha: 0.6
 
 control:
-  lookahead_mm: 25.0
+  lookahead_mm: 18.0
   kp: 0.015
   kd: 0.006
-  max_command: 1.0
+  # Integral: walks the command up while the ball refuses to move and
+  # absorbs a slightly non-level neutral. Keep small.
+  ki: 0.004
+  integral_limit: 0.25
+  # Stiction compensation: below ~this tilt the ball does not move at all
+  # (measured with axis_check). When the ball is stalled away from the
+  # target, the command is scaled up to at least this magnitude.
+  stall_kick: 0.30
+  stall_speed_mm_s: 8.0
+  stall_dist_mm: 8.0
+  max_command: 0.45
 
 maze:
   # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,

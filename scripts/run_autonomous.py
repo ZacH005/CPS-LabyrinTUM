@@ -90,6 +90,10 @@ def main() -> None:
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument("--kp", type=float, default=None)
     parser.add_argument("--kd", type=float, default=None)
+    parser.add_argument("--ki", type=float, default=None)
+    parser.add_argument("--stall-kick", type=float, default=None,
+                        help="Min command magnitude when the ball is stalled off-target "
+                             "(the tilt that breaks static friction, ~0.3)")
     parser.add_argument("--max-command", type=float, default=None,
                         help="Cap |servo command|; start low (e.g. 0.2)")
     parser.add_argument("--lookahead", type=float, default=None, help="Lookahead mm")
@@ -116,12 +120,21 @@ def main() -> None:
 
     kp = args.kp if args.kp is not None else float(config.control["kp"])
     kd = args.kd if args.kd is not None else float(config.control["kd"])
+    ki = args.ki if args.ki is not None else float(config.control.get("ki", 0.0))
+    stall_kick = (args.stall_kick if args.stall_kick is not None
+                  else float(config.control.get("stall_kick", 0.0)))
     max_command = (args.max_command if args.max_command is not None
                    else float(config.control["max_command"]))
     lookahead_mm = (args.lookahead if args.lookahead is not None
                     else float(config.control["lookahead_mm"]))
 
-    follower = PathFollower(PathFollowerConfig(kp=kp, kd=kd, max_command=max_command))
+    follower = PathFollower(PathFollowerConfig(
+        kp=kp, kd=kd, ki=ki, max_command=max_command,
+        stall_kick=stall_kick,
+        integral_limit=float(config.control.get("integral_limit", 0.25)),
+        stall_speed_mm_s=float(config.control.get("stall_speed_mm_s", 8.0)),
+        stall_dist_mm=float(config.control.get("stall_dist_mm", 8.0)),
+    ))
     estimator = LowPassVelocityEstimator()
     total_length = float(path.cumulative_lengths[-1])
 
@@ -143,6 +156,7 @@ def main() -> None:
 
     start_time = monotonic()
     last_seen = monotonic()
+    prev_timestamp_s = None
     outcome = "stopped by user"
 
     mouse_state: dict = {}
@@ -217,7 +231,11 @@ def main() -> None:
                     progress = path.nearest_progress_mm(board_xy)
                     target = path.point_at_progress_mm(progress + lookahead_mm)
 
-                    board_cmd = follower.command(state.position_mm, state.velocity_mm_s, target)
+                    dt_s = (frame.timestamp_s - prev_timestamp_s
+                            if prev_timestamp_s is not None else 0.0)
+                    prev_timestamp_s = frame.timestamp_s
+                    board_cmd = follower.command(state.position_mm, state.velocity_mm_s,
+                                                 target, dt_s)
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -max_command, max_command)
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
 
