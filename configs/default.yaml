@@ -35,7 +35,7 @@ vision:
   tracker: "pipeline"
   # Specular gate for the pipeline tracker: ball glints ~254, holes ~150-215.
   # Lower this if lighting is dim and the ball stops being detected.
-  min_specular: 225
+  min_specular: 100
   # Optional confusers/ROI JSON from `pipeline.py --calibrate`; loaded if present.
   confusers_file: "calibration/live_confusers.json"
   # Reflective silver is difficult; start with bright-blob detection and tune on real frames.
@@ -66,4 +66,6 @@ maze:
   # actual play area size is 263mm x 222mm
   width_mm: 263.0
   height_mm: 222.0
-  path_file: "configs/example_path.csv"
+  # The real traced route (scripts/auto_trace_path.py). example_path.csv is
+  # scaffold dummy data - do not point the runner at it.
+  path_file: "configs/maze_path_auto.csv"
