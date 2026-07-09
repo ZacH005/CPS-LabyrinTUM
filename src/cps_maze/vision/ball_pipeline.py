@@ -215,6 +215,13 @@ class PipelineBallTracker:
             roi=self.roi,
         )
 
+    def seed(self, x_px: float, y_px: float) -> None:
+        """Manually (re)seed the track, e.g. from a user click on the ball.
+
+        Far more reliable than auto-seed on a bright board where glare spots
+        can outshine the ball."""
+        self.tracker = self._make_tracker((float(x_px), float(y_px)))
+
     def detect(self, image_bgr: np.ndarray) -> BallDetection:
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 

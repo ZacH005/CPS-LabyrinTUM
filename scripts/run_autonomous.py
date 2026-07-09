@@ -145,6 +145,16 @@ def main() -> None:
     last_seen = monotonic()
     outcome = "stopped by user"
 
+    mouse_state: dict = {}
+    if not args.no_preview:
+        cv2.namedWindow(WINDOW)
+
+        def on_mouse(event: int, x: int, y: int, *_rest) -> None:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                mouse_state["seed"] = (x, y)
+
+        cv2.setMouseCallback(WINDOW, on_mouse)
+
     with CameraCapture(config.camera) as camera, serial_ctx as link, \
             CsvRunLogger(Path(args.log), log_fields) as logger:
         if link is not None:
@@ -157,6 +167,9 @@ def main() -> None:
                     break
 
                 frame = camera.read()
+                seed = mouse_state.pop("seed", None)
+                if seed is not None and hasattr(tracker, "seed"):
+                    tracker.seed(*seed)  # click the ball to (re)seed the track
                 detection = tracker.detect(frame.image)
                 servo_cmd = np.zeros(2)
                 target = None

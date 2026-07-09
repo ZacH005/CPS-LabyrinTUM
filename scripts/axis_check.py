@@ -63,20 +63,60 @@ def measure_ball_mm(
 
 
 def stream_command(
-    link: ArduinoServoLink, yaw: float, pitch: float, seconds: float, rate_hz: float = 50.0
+    link: ArduinoServoLink,
+    yaw: float,
+    pitch: float,
+    seconds: float,
+    camera: CameraCapture,
+    tracker,
 ) -> None:
-    """Stream a constant command so the firmware watchdog keeps it applied."""
-    period = 1.0 / rate_hz
+    """Stream a constant command while keeping the tracker fed with frames,
+    so the track survives the pulse instead of losing the moving ball."""
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         link.send(ServoCommand(yaw=yaw, pitch=pitch))
-        time.sleep(period)
+        frame = camera.read()
+        det = tracker.detect(frame.image)
+        cv2.imshow(WINDOW, tracker.draw_detection(frame.image, det))
+        cv2.waitKey(1)
 
 
-def wait_for_space() -> bool:
-    """Returns False if user aborted."""
+def live_wait_for_space(
+    camera: CameraCapture,
+    tracker,
+    mouse_state: dict,
+    prompt: str,
+) -> bool:
+    """Live view while waiting: shows detection, the peak brightness under
+    the mouse cursor (to pick min_specular), and lets the user click the
+    ball to seed the tracker. Returns False if the user aborted."""
     while True:
-        key = cv2.waitKey(50) & 0xFF
+        frame = camera.read()
+        gray = cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)
+
+        if mouse_state.pop("seed_request", None) is not None and hasattr(tracker, "seed"):
+            sx, sy = mouse_state["last_click"]
+            tracker.seed(sx, sy)
+            print(f"seeded tracker at ({sx}, {sy})")
+
+        det = tracker.detect(frame.image)
+        view = tracker.draw_detection(frame.image, det)
+
+        mx, my = mouse_state.get("pos", (0, 0))
+        h, w = gray.shape
+        x0, x1 = max(0, mx - 20), min(w, mx + 21)
+        y0, y1 = max(0, my - 20), min(h, my + 21)
+        peak = int(gray[y0:y1, x0:x1].max()) if (x1 > x0 and y1 > y0) else 0
+
+        cv2.putText(view, prompt, (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(view, f"peak brightness near cursor: {peak}", (10, 52),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        cv2.putText(view, "CLICK THE BALL to seed  |  SPACE=go  q=abort", (10, 78),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        cv2.imshow(WINDOW, view)
+
+        key = cv2.waitKey(30) & 0xFF
         if key == ord(" "):
             return True
         if key in (27, ord("q")):
@@ -108,6 +148,15 @@ def main() -> None:
     port = args.port or config.serial["port"]
 
     cv2.namedWindow(WINDOW)
+    mouse_state: dict = {"pos": (0, 0)}
+
+    def on_mouse(event: int, x: int, y: int, *_rest) -> None:
+        mouse_state["pos"] = (x, y)
+        if event == cv2.EVENT_LBUTTONDOWN:
+            mouse_state["last_click"] = (x, y)
+            mouse_state["seed_request"] = True
+
+    cv2.setMouseCallback(WINDOW, on_mouse)
     print(__doc__)
     displacements: dict[str, np.ndarray] = {}
 
@@ -122,9 +171,9 @@ def main() -> None:
         for name, direction in PULSES:
             amplitude = args.amplitude
             while True:
-                print(f"\n[{name}] amplitude {amplitude:.2f}: place the ball in an "
-                      "open area, then press SPACE (q to abort)")
-                if not wait_for_space():
+                prompt = f"[{name}] amplitude {amplitude:.2f}: ball in open area"
+                print(f"\n{prompt} - click the ball, then SPACE (q aborts)")
+                if not live_wait_for_space(camera, tracker, mouse_state, prompt):
                     print("aborted")
                     return
 
@@ -133,7 +182,8 @@ def main() -> None:
                 p0 = measure_ball_mm(camera, tracker, homography, args.samples)
 
                 yaw, pitch = amplitude * direction
-                stream_command(link, float(yaw), float(pitch), args.pulse_seconds)
+                stream_command(link, float(yaw), float(pitch), args.pulse_seconds,
+                               camera, tracker)
                 link.neutral()
                 time.sleep(args.settle_seconds)
                 p1 = measure_ball_mm(camera, tracker, homography, args.samples)
