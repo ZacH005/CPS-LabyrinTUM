@@ -1,0 +1,295 @@
+% ---------------------------------------------------------------------------
+% Hardware sections for the marble-maze CPS report.
+% Style/structure mirrors the ConnecTUM (Connect 4) CPS report:
+%   §Mechanical design  →  requirements → design → motivation → integration
+%   §Electrical and control system → architecture, per-actuator control,
+%   wiring table, iteration/failure narratives.
+% Figures expected in fig/. [CONFIRM: ...] marks numbers to verify.
+% ---------------------------------------------------------------------------
+
+\section{System overview}
+\label{sec:overview}
+
+The system autonomously solves a physical wooden labyrinth by tilting the
+board about two orthogonal axes so that a steel marble follows a target path
+from start to goal. It is a cyber-physical system composed of four subsystems:
+(i) a commercial wooden labyrinth whose inner gimbal is tilted about two axes;
+(ii) a two-servo actuation stage that drives those axes; (iii) an overhead
+global-shutter camera that provides state feedback; and (iv) a host PC that
+runs perception and control in Python and issues tilt commands over a USB
+serial link to an Arduino microcontroller. The Arduino translates high-level
+tilt commands into pulse-width signals through a dedicated PWM driver.
+
+Following the same philosophy as the mechanical iterations described below, we
+built the platform incrementally: we first brought up the electronics and
+firmware on the bench with the servos unloaded, validated the command
+interface and safety behaviour, and only then progressed to mechanical
+coupling, camera mounting, and calibration. This staged approach let us
+isolate electrical, mechanical, and software faults independently, which
+proved valuable when diagnosing the failures reported in
+Sections~\ref{sec:mech} and \ref{sec:elec}.
+
+\section{Mechanical design}
+\label{sec:mech}
+
+This section describes the mechanical components, their design, and their
+integration. Unlike a purpose-built machine, our starting point is an
+unmodified commercial labyrinth; the mechanical work therefore centres on
+\emph{interfacing} servo actuators to the board's existing tilt mechanism
+without compromising its motion. We favoured reversible, low-part-count
+solutions and iterated over several coupling concepts, keeping the design that
+best balanced simplicity, backlash, and safe travel.
+
+\subsection{Board and tilt mechanism}
+\label{sec:mech-board}
+
+The labyrinth is a two-axis gimbal: an outer frame pivots about one axis and an
+inner frame about the orthogonal axis, giving two independent tilt degrees of
+freedom. Natively, each axis is driven by a knob coupled through a
+string-and-spring transmission. The play area is approximately
+$335\times335$\,mm [CONFIRM: measured board dimensions]. Two properties of this
+mechanism shaped our design: the string/spring transmission introduces
+compliance and a limited, spring-loaded travel range, and the two axes have
+hard mechanical end-stops that must not be driven into under power.
+
+\subsection{Actuation requirements}
+\label{sec:mech-req}
+
+For the actuation interface we formulated the following requirements:
+
+\begin{enumerate}
+  \item Drive each of the two tilt axes independently across the range needed
+    for marble control.
+  \item Keep commanded travel strictly inside the mechanism's mechanical
+    end-stops to avoid stalling the servos.
+  \item Minimise backlash between the servo and the board, since slop degrades
+    the accuracy of open-loop tilt commands.
+  \item Avoid irreversible modification of the board where practical.
+  \item Provide a repeatable neutral (level) position.
+\end{enumerate}
+
+We selected two MG996R digital metal-gear servos (13\,kg$\cdot$cm class)
+[CONFIRM: exact model/torque], one per axis. A key early observation was that
+the marble is controlled by only a few degrees of \emph{board} tilt, which
+corresponds to a modest actuator swing; full travel of the native mechanism is
+not required. This relaxed the range requirement and made hobby servos viable.
+
+\subsection{Actuator coupling: from pushrod linkage to direct drive}
+\label{sec:mech-linkage}
+
+The coupling between servo and board went through two iterations.
+
+\paragraph{Iteration~A --- ball-joint pushrod (superseded).}
+Our first concept followed a conventional RC pushrod pattern
+(Figure~\ref{fig:tie-rod}): a ball-joint rod end threaded onto an M3$\times$100
+threaded rod at each end, connecting an offset servo horn to a lever fixed on
+the board's knob. A hole drilled off-centre in the knob set the lever length
+and hence the servo-to-axis gear ratio. This approach is forgiving of servo
+placement, but in our setup it introduced backlash at the two ball joints and a
+nonlinear angle map that complicated calibration, and it required a precisely
+located lever hole to match the servo's limited swing. These drawbacks
+motivated a change of approach.
+
+\paragraph{Iteration~B --- direct coupling to the tilt axes (adopted).}
+In the final design, each servo is mounted beneath the board and its output is
+coupled directly to a gimbal tilt axis, driving the inner and outer frames
+respectively (Figure~\ref{fig:direct-coupling}) [CONFIRM: exact coupling ---
+set-screw hub / printed adapter / horn bolted to pivot]. Direct coupling
+removes the ball-joint backlash and yields a near 1:1 servo-to-axis angle map,
+simplifying the tilt command model at the cost of requiring accurate coaxial
+alignment of the servo to the pivot. Because the mapping is direct, the servo
+travel must be constrained so it cannot drive the axis into its mechanical
+stop; we enforce this in firmware (Section~\ref{sec:elec-safety}).
+
+\subsection{Servo mounting and camera support}
+\label{sec:mech-mount}
+
+Both servos are fixed rigidly relative to the board so that reaction torque
+produces board tilt rather than actuator displacement; any compliance in the
+servo mount would appear directly as tilt error. The overhead camera is
+supported on an articulated arm and clamp and is referenced to the same rigid
+base as the board, so that incidental disturbances move the camera and board
+together and preserve the image-to-board calibration
+(Section~\ref{sec:calibration}).
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\linewidth]{fig/tie_rod_linkage.jpg}
+\caption{Iteration~A: ball-joint pushrod linkage concept, in which a threaded
+rod with ball-joint ends connects an offset servo horn to a lever on the board
+knob. Illustrative reference; superseded in our build by direct coupling.}
+\label{fig:tie-rod}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\linewidth]{fig/direct_coupling.jpg}
+\caption{Iteration~B (adopted): the servo output is coupled directly to the
+board's tilt pivot, eliminating rod-end backlash.}
+\label{fig:direct-coupling}
+\end{figure}
+
+\section{Electrical and control system}
+\label{sec:elec}
+
+This section describes the electronics that drive the servos and the firmware
+that mediates between the host PC and the actuators. As with the mechanical
+design, the final architecture is the result of iterations, two of which
+(power distribution and the serial/firmware interface) are described in detail
+because they materially affected reliability.
+
+\subsection{Architecture}
+\label{sec:elec-arch}
+
+We formulated the following requirements for the control electronics:
+
+\begin{enumerate}
+  \item Sufficient host compute for real-time perception on the camera stream.
+  \item Deterministic, low-latency generation of servo PWM signals.
+  \item A power scheme able to supply servo stall currents without disturbing
+    the logic and camera electronics.
+  \item A simple, robust host--microcontroller command interface.
+\end{enumerate}
+
+Perception and control run on a host PC (equipped with an NVIDIA RTX~4050)
+[CONFIRM: CPU/RAM/OS], which communicates over USB serial with an Arduino
+UNO~R4 Minima. The Arduino does not generate PWM directly; instead it drives a
+PCA9685 16-channel PWM controller over I\textsuperscript{2}C
+(address~0x40, 50\,Hz servo frame), with channel~0 assigned to the yaw axis and
+channel~1 to the pitch axis. Offloading PWM generation to the PCA9685 keeps
+timing off the microcontroller's main loop and matches the pattern of using a
+dedicated PWM driver behind a microcontroller. This split (host for
+high-level logic, microcontroller + PWM driver for real-time actuation)
+mirrors the distributed, serial-connected architecture we found effective for
+decoupling flexible Python logic from real-time motor control.
+
+\subsection{Power distribution and stall protection}
+\label{sec:elec-power}
+
+Servo power is supplied by a dedicated 5\,V / 10\,A DC supply wired to the
+PCA9685 V+ terminal, electrically separate from the Arduino logic supply, which
+is delivered over USB. The two domains share a common ground at the PWM driver.
+This split-rail arrangement isolates inductive servo transients from the logic
+and camera electronics.
+
+An early failure made the importance of this subsystem concrete. During an
+actuation test the servo was commanded past the mechanism's mechanical stop;
+unable to reach the setpoint, it drew sustained stall current
+([CONFIRM: $\sim$2.5\,A per MG996R]). The initial harness used thin jumper wire
+(\textasciitilde26\,AWG) on the servo rail, which cannot carry this current and
+overheated to the point of conductor failure. We resolved this in two ways:
+(i) the servo-rail conductors were replaced with 18--20\,AWG wire and an inline
+fuse was added, so that an over-current condition blows a fuse rather than a
+conductor; and (ii) commanded travel was constrained in firmware
+(Section~\ref{sec:elec-safety}) so the actuator cannot be driven into a stall
+in the first place. We report this because undersized power wiring and
+unconstrained travel are common, silent hazards in servo-actuated rigs.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Signal} & \textbf{Connection} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Arduino UNO R4 Minima}} \\
+\quad 5V   & PCA9685 VCC (logic) \\
+\quad GND  & PCA9685 GND (common ground) \\
+\quad SDA  & PCA9685 SDA \\
+\quad SCL  & PCA9685 SCL \\
+\quad USB  & Host PC (serial) \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{PCA9685 PWM driver}} \\
+\quad V+   & 5\,V / 10\,A supply (+), via fuse \\
+\quad GND  & 5\,V / 10\,A supply ($-$) \\
+\quad CH0  & Yaw servo (signal/V+/GND) \\
+\quad CH1  & Pitch servo (signal/V+/GND) \\
+\bottomrule
+\end{tabular}
+\caption{Wiring of the control electronics. Logic power (Arduino, USB) and
+servo power (5\,V/10\,A supply) are separate rails sharing a common ground at
+the PCA9685.}
+\label{tab:wiring}
+\end{table}
+
+\subsection{Firmware and command interface}
+\label{sec:elec-firmware}
+
+The Arduino runs a minimal firmware exposing a line-oriented serial protocol.
+The host sends normalized tilt commands \texttt{SET <yaw> <pitch>}, each value
+in $[-1, 1]$, which the firmware maps to a servo pulse width about a
+1500\,\textmu s neutral. The protocol also provides \texttt{PING}/\texttt{PONG}
+liveness checks and an explicit \texttt{NEUTRAL} command; malformed input is
+rejected with an error response.
+
+The serial/firmware interface itself was tuned over two iterations, motivated
+by control-loop latency:
+
+\begin{itemize}
+  \item \textbf{Throughput.} The serial link was raised from 115\,200 to
+    500\,000\,baud, and the I\textsuperscript{2}C clock to the PCA9685 to
+    400\,kHz (Fast Mode), reducing the per-command transport time
+    ([CONFIRM: $\sim$1.7\,ms $\rightarrow$ $\sim$0.3\,ms per command]).
+  \item \textbf{Loop structure.} The initial firmware read a full line with a
+    blocking call and echoed an acknowledgement per command. We replaced this
+    with a non-blocking, character-by-character reader and dropped the
+    per-command echo, so the main loop never stalls on serial I/O. Servo pulses
+    are refreshed on a fixed 200\,Hz schedule independent of command arrival.
+\end{itemize}
+
+\subsection{On-board safety behaviour}
+\label{sec:elec-safety}
+
+Three safety mechanisms run on the microcontroller, independent of the host, so
+that a software fault, a disconnected cable, or an out-of-range command cannot
+damage the mechanism or leave the board tilted:
+
+\begin{enumerate}
+  \item \textbf{Travel clamp.} Commanded pulse widths are hard-clamped to a
+    safe band about neutral ($1500\pm300$\,\textmu s in the current
+    configuration), keeping the actuator inside the mechanism's end-stops.
+  \item \textbf{Slew limiting.} Each update ramps the commanded pulse toward
+    its target rather than stepping instantaneously, avoiding abrupt torque
+    transients.
+  \item \textbf{Watchdog.} If no host command is received within 500\,ms, both
+    axes are returned to neutral, so a lost connection fails safe to a level
+    board.
+\end{enumerate}
+
+The travel clamp is deliberately conservative: after the stall incident of
+Section~\ref{sec:elec-power}, we evaluated widening it to increase usable tilt
+range but reverted to the conservative band, prioritising actuator safety over
+maximum travel.
+
+\subsection{Sensing}
+\label{sec:elec-sensing}
+
+State feedback is provided by an overhead USB2.0 UVC global-shutter monochrome
+camera (OV9281-class sensor, 720p/120\,fps advertised) [CONFIRM: configured
+resolution/FPS]. A global shutter avoids the motion-induced skew that a rolling
+shutter would introduce on the moving marble. Camera intrinsics and the
+image-to-board homography are estimated in a calibration step
+(Section~\ref{sec:calibration}).
+
+% ---------------------------------------------------------------------------
+% Open placeholders for the remaining (software) sections.
+% ---------------------------------------------------------------------------
+
+\section{Calibration}
+\label{sec:calibration}
+% TODO (software): camera intrinsics; image-to-board homography; procedure and
+% residual error.
+
+\section{Perception}
+\label{sec:perception}
+% TODO (software): marble detection/tracking; state (position, velocity)
+% estimation; lost-ball and hole-fall handling.
+
+\section{Planning and control}
+\label{sec:control}
+% TODO (software): path annotation; path-following controller; command
+% saturation and jerk limiting; per-section tuning.
+
+\section{Evaluation}
+\label{sec:evaluation}
+% TODO: success rate, completion time, and failure modes across repeated runs.

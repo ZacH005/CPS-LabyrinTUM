@@ -22,6 +22,10 @@ class PathFollowerConfig:
     stall_kick: float = 0.0
     stall_speed_mm_s: float = 8.0   # "stalled" when slower than this
     stall_dist_mm: float = 8.0      # ...and further than this from target
+    # Require the low-speed condition to PERSIST this long before kicking.
+    # A single slow frame also happens during ordinary deceleration (e.g.
+    # easing toward a target); only a sustained stop is real static friction.
+    stall_min_duration_s: float = 0.3
 
 
 @dataclass
@@ -42,11 +46,18 @@ class VelocityFollowerConfig:
     max_command: float = 0.45
     stall_kick: float = 0.30       # min |command| when stuck but asked to move
     stall_speed_mm_s: float = 8.0
+    # See PathFollowerConfig.stall_min_duration_s: a slow instant is normal
+    # while braking into a corner; only a sustained stop is real stiction.
+    stall_min_duration_s: float = 0.3
 
 
 class VelocityPathFollower:
     def __init__(self, config: VelocityFollowerConfig):
         self.config = config
+        self.low_speed_time_s = 0.0
+
+    def reset(self) -> None:
+        self.low_speed_time_s = 0.0
 
     def command(
         self,
@@ -79,9 +90,19 @@ class VelocityPathFollower:
         v_desired = v_forward + v_lat
         raw = cfg.k_vel * (v_desired - velocity_mm_s)
 
-        # stiction: ball parked but asked to move -> guarantee breakaway tilt
+        speed = float(np.linalg.norm(velocity_mm_s))
+        if speed < cfg.stall_speed_mm_s:
+            self.low_speed_time_s += max(dt_s, 0.0)
+        else:
+            self.low_speed_time_s = 0.0
+
+        # Stiction: apply the breakaway kick only once slow motion has
+        # PERSISTED (real static friction). A single slow frame also happens
+        # every time the ball brakes into an intentional corner/wall
+        # slowdown - that is not stiction and punching a full kick there is
+        # what flings the ball wide and into holes at corners.
         if (cfg.stall_kick > 0.0
-                and float(np.linalg.norm(velocity_mm_s)) < cfg.stall_speed_mm_s
+                and self.low_speed_time_s >= cfg.stall_min_duration_s
                 and float(np.linalg.norm(v_desired)) > 5.0):
             magnitude = float(np.linalg.norm(raw))
             if 1e-9 < magnitude < cfg.stall_kick:
@@ -94,9 +115,11 @@ class PathFollower:
     def __init__(self, config: PathFollowerConfig):
         self.config = config
         self.integral = np.zeros(2)
+        self.low_speed_time_s = 0.0
 
     def reset(self) -> None:
         self.integral = np.zeros(2)
+        self.low_speed_time_s = 0.0
 
     def command(
         self,
@@ -121,7 +144,13 @@ class PathFollower:
 
         raw = cfg.kp * error + cfg.ki * self.integral - cfg.kd * velocity_mm_s
 
-        if (cfg.stall_kick > 0.0 and speed < cfg.stall_speed_mm_s
+        if speed < cfg.stall_speed_mm_s:
+            self.low_speed_time_s += max(dt_s, 0.0)
+        else:
+            self.low_speed_time_s = 0.0
+
+        if (cfg.stall_kick > 0.0
+                and self.low_speed_time_s >= cfg.stall_min_duration_s
                 and err_dist > cfg.stall_dist_mm):
             magnitude = float(np.linalg.norm(raw))
             if 1e-9 < magnitude < cfg.stall_kick:

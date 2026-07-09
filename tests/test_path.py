@@ -17,3 +17,37 @@ def test_nearest_progress_projects_onto_segment():
     progress = path.nearest_progress_mm(np.array([4.0, 3.0]))
 
     assert progress == 4.0
+
+
+def test_windowed_progress_stays_in_own_corridor():
+    # Two corridors 12mm apart (a wall's width in a snaking maze); global
+    # nearest-segment search would snap to the far corridor once the ball
+    # drifts closer to the wall than to its own centerline.
+    path = WaypointPath(points_mm=np.array(
+        [[20.0, 50.0], [200.0, 50.0], [200.0, 62.0], [20.0, 62.0]]))
+    ball = np.array([100.0, 57.0])  # 7mm from own line, 5mm from the far one
+
+    global_progress = path.nearest_progress_mm(ball)
+    windowed_progress, _ = path.nearest_progress_and_distance_mm(
+        ball, near_progress_mm=70.0
+    )
+
+    assert global_progress > 190  # snaps to the far corridor: the bug
+    assert 60 < windowed_progress < 120  # stays in the near corridor: fixed
+
+
+def test_heading_change_accumulates_through_a_chicane():
+    # A chicane's opposite turns cancel at the endpoints; comparing only the
+    # tangent 30mm ahead would read this as nearly straight and let the
+    # controller barrel through at full speed.
+    chicane = WaypointPath(points_mm=np.array(
+        [[0.0, 20.0], [40.0, 20.0], [52.0, 32.0], [64.0, 20.0], [110.0, 20.0]]))
+
+    turn = chicane.heading_change_deg(35.0)
+
+    t0 = chicane.tangent_at_progress_mm(35.0)
+    t1 = chicane.tangent_at_progress_mm(65.0)
+    endpoint_only = float(np.degrees(np.arccos(np.clip(np.dot(t0, t1), -1.0, 1.0))))
+
+    assert turn > 60.0
+    assert turn > 2 * endpoint_only

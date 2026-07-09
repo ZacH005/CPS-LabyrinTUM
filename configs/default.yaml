@@ -74,11 +74,11 @@ control:
   # corrects velocity error, so the board automatically brakes the ball
   # before corners. "position": legacy lookahead PD.
   mode: "velocity"
-  v_max_mm_s: 45.0       # cruise speed on straights; raise only when reliable
-  min_speed_frac: 0.25
-  corner_slow_deg: 110.0
-  k_lat: 2.5             # pull toward centerline (per mm of cross-track)
-  lat_v_max_mm_s: 30.0
+  v_max_mm_s: 30.0       # cruise speed on straights; raise only when reliable
+  min_speed_frac: 0.15   # floor on cornering/near-wall crawl speed
+  corner_slow_deg: 70.0  # brake harder for smaller accumulated turn angles
+  k_lat: 1.6             # pull toward centerline (per mm of cross-track)
+  lat_v_max_mm_s: 18.0
   k_vel: 0.010           # tilt per mm/s of velocity error
   lookahead_mm: 18.0
   kp: 0.015
@@ -89,10 +89,16 @@ control:
   integral_limit: 0.25
   # Stiction compensation: below ~this tilt the ball does not move at all
   # (measured with axis_check). When the ball is stalled away from the
-  # target, the command is scaled up to at least this magnitude.
+  # target, the command is scaled up to at least this magnitude - but only
+  # once low speed has PERSISTED (a single slow frame also happens during
+  # ordinary braking into a corner, which is not stiction).
   stall_kick: 0.30
-  stall_speed_mm_s: 8.0
+  stall_speed_mm_s: 5.0
   stall_dist_mm: 8.0
+  stall_min_duration_s: 0.3
+  # Max |servo command| change per second sent to hardware; smooths sudden
+  # jumps (stiction kicks, re-association) so corners aren't punched through.
+  command_slew_per_s: 3.0
   max_command: 0.45
 
 maze:

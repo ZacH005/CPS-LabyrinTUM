@@ -109,6 +109,10 @@ def main() -> None:
                              "brakes into corners; position: legacy lookahead PD")
     parser.add_argument("--v-max", type=float, default=None,
                         help="Cruise speed mm/s for the velocity controller")
+    parser.add_argument("--command-slew", type=float, default=None,
+                        help="Max |servo command| change per second sent to hardware "
+                             "(0 disables). Smooths sudden jumps from stiction kicks "
+                             "or re-association so corners don't get punched through.")
     parser.add_argument("--max-command", type=float, default=None,
                         help="Cap |servo command|; start low (e.g. 0.2)")
     parser.add_argument("--lookahead", type=float, default=None, help="Lookahead mm")
@@ -162,12 +166,17 @@ def main() -> None:
     mode = args.controller or str(config.control.get("mode", "velocity")).lower()
     v_max = (args.v_max if args.v_max is not None
              else float(config.control.get("v_max_mm_s", 45.0)))
+    command_slew_per_s = (args.command_slew if args.command_slew is not None
+                          else float(config.control.get("command_slew_per_s", 3.0)))
+    stall_min_duration_s = float(config.control.get("stall_min_duration_s", 0.3))
+    stall_speed_mm_s = float(config.control.get("stall_speed_mm_s", 8.0))
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
         integral_limit=float(config.control.get("integral_limit", 0.25)),
-        stall_speed_mm_s=float(config.control.get("stall_speed_mm_s", 8.0)),
+        stall_speed_mm_s=stall_speed_mm_s,
         stall_dist_mm=float(config.control.get("stall_dist_mm", 8.0)),
+        stall_min_duration_s=stall_min_duration_s,
     ))
     velocity_follower = VelocityPathFollower(VelocityFollowerConfig(
         v_max_mm_s=v_max,
@@ -178,7 +187,8 @@ def main() -> None:
         k_vel=float(config.control.get("k_vel", 0.010)),
         max_command=max_command,
         stall_kick=stall_kick,
-        stall_speed_mm_s=float(config.control.get("stall_speed_mm_s", 8.0)),
+        stall_speed_mm_s=stall_speed_mm_s,
+        stall_min_duration_s=stall_min_duration_s,
     ))
     print(f"controller: {mode}" + (f" (v_max {v_max:.0f} mm/s)" if mode == "velocity" else ""))
     estimator = LowPassVelocityEstimator()
@@ -204,6 +214,7 @@ def main() -> None:
     last_seen = monotonic()
     prev_timestamp_s = None
     progress_est = None  # last known path progress; keeps association local
+    prev_servo_cmd = np.zeros(2)  # for command-slew limiting
     outcome = "stopped by user"
 
     mouse_state: dict = {}
@@ -262,6 +273,10 @@ def main() -> None:
                 if seed is not None and hasattr(tracker, "seed"):
                     tracker.seed(*seed)  # click the ball to (re)seed the track
                     progress_est = None  # ball may have been moved: re-associate
+                    prev_timestamp_s = None
+                    prev_servo_cmd = np.zeros(2)
+                    follower.reset()
+                    velocity_follower.reset()
                 detection = tracker.detect(frame.image)
                 servo_cmd = np.zeros(2)
                 target = None
@@ -326,6 +341,11 @@ def main() -> None:
                                                      state.velocity_mm_s,
                                                      target, dt_s)
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -max_command, max_command)
+                    if command_slew_per_s > 0.0 and dt_s > 0.0:
+                        max_step = command_slew_per_s * dt_s
+                        servo_cmd = prev_servo_cmd + np.clip(
+                            servo_cmd - prev_servo_cmd, -max_step, max_step)
+                    prev_servo_cmd = servo_cmd.copy()
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
 
                     near = holes[
@@ -354,6 +374,14 @@ def main() -> None:
                 else:
                     if link is not None:
                         link.neutral()
+                    # Ball gone: don't let a stale timestamp/command survive
+                    # the gap. A leftover big dt_s on reacquire would spike
+                    # the stiction timer straight past its threshold and the
+                    # slew limiter would jump from a stale nonzero command.
+                    prev_timestamp_s = None
+                    prev_servo_cmd = np.zeros(2)
+                    follower.reset()
+                    velocity_follower.reset()
                     logger.write({
                         "timestamp_s": frame.timestamp_s, "found": False,
                         "x_mm": "", "y_mm": "", "vx_mm_s": "", "vy_mm_s": "",
