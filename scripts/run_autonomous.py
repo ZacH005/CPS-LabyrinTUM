@@ -158,6 +158,7 @@ def main() -> None:
     start_time = monotonic()
     last_seen = monotonic()
     prev_timestamp_s = None
+    progress_est = None  # last known path progress; keeps association local
     outcome = "stopped by user"
 
     mouse_state: dict = {}
@@ -215,6 +216,7 @@ def main() -> None:
                 seed = mouse_state.pop("seed", None)
                 if seed is not None and hasattr(tracker, "seed"):
                     tracker.seed(*seed)  # click the ball to (re)seed the track
+                    progress_est = None  # ball may have been moved: re-associate
                 detection = tracker.detect(frame.image)
                 servo_cmd = np.zeros(2)
                 target = None
@@ -229,7 +231,17 @@ def main() -> None:
                         dtype=float,
                     )
                     state = estimator.update(board_xy, frame.timestamp_s)
-                    progress = path.nearest_progress_mm(board_xy)
+                    # Windowed projection: the ball cannot jump along the path
+                    # between frames, so never associate it with a corridor far
+                    # away in path order (even if physically adjacent behind a
+                    # wall). Fall back to global search only when the windowed
+                    # match is implausibly far off-path (ball moved by hand).
+                    progress, cross = path.nearest_progress_and_distance_mm(
+                        board_xy, progress_est
+                    )
+                    if progress_est is not None and cross > 35.0:
+                        progress, cross = path.nearest_progress_and_distance_mm(board_xy)
+                    progress_est = progress
                     target = path.point_at_progress_mm(progress + lookahead_mm)
 
                     dt_s = (frame.timestamp_s - prev_timestamp_s

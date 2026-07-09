@@ -30,12 +30,43 @@ class WaypointPath:
     def cumulative_lengths(self) -> np.ndarray:
         return np.concatenate([[0.0], np.cumsum(self.segment_lengths)])
 
-    def nearest_progress_mm(self, position_mm: np.ndarray) -> float:
+    def nearest_progress_mm(
+        self,
+        position_mm: np.ndarray,
+        near_progress_mm: float | None = None,
+        window_mm: float = 60.0,
+    ) -> float:
+        return self.nearest_progress_and_distance_mm(
+            position_mm, near_progress_mm, window_mm
+        )[0]
+
+    def nearest_progress_and_distance_mm(
+        self,
+        position_mm: np.ndarray,
+        near_progress_mm: float | None = None,
+        window_mm: float = 60.0,
+    ) -> tuple[float, float]:
+        """Project onto the path; returns (progress_mm, cross_track_mm).
+
+        A snaking maze path brings corridors that are far apart in path order
+        within millimetres of each other, separated by a wall. A global
+        nearest-segment search can therefore snap to a future/past corridor
+        and send the controller driving into the wall between them. Passing
+        ``near_progress_mm`` restricts the search to segments within
+        ``window_mm`` of path progress of the last known position - the ball
+        cannot teleport along the path between frames.
+        """
         best_distance = float("inf")
         best_progress = 0.0
         cumulative = self.cumulative_lengths
 
         for index, (start, end) in enumerate(zip(self.points_mm[:-1], self.points_mm[1:])):
+            if near_progress_mm is not None:
+                seg_start = float(cumulative[index])
+                seg_end = float(cumulative[index + 1])
+                if (seg_end < near_progress_mm - window_mm
+                        or seg_start > near_progress_mm + window_mm):
+                    continue
             segment = end - start
             length_sq = float(np.dot(segment, segment))
             if length_sq == 0.0:
@@ -47,7 +78,7 @@ class WaypointPath:
                 best_distance = distance
                 best_progress = float(cumulative[index] + t * np.sqrt(length_sq))
 
-        return best_progress
+        return best_progress, best_distance
 
     def point_at_progress_mm(self, progress_mm: float) -> np.ndarray:
         cumulative = self.cumulative_lengths
