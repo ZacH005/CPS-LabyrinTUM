@@ -51,3 +51,25 @@ def test_heading_change_accumulates_through_a_chicane():
 
     assert turn > 60.0
     assert turn > 2 * endpoint_only
+
+
+def test_heading_change_ignores_annotation_zigzag_noise():
+    # An auto-traced straight has small zigzags; accumulating their absolute
+    # angles made straights read as phantom corners (random slowdowns).
+    rng = np.random.default_rng(7)
+    xs = np.arange(0.0, 120.0, 4.0)
+    noisy_straight = np.column_stack([xs, 50.0 + rng.uniform(-0.4, 0.4, len(xs))])
+    path = WaypointPath(points_mm=noisy_straight)
+
+    turn = path.heading_change_deg(10.0, noise_deg=12.0)
+
+    assert turn < 15.0, f"noisy straight must not read as a corner ({turn:.0f} deg)"
+
+
+def test_heading_change_still_registers_real_corner_with_deadband():
+    corner = WaypointPath(points_mm=np.array(
+        [[0.0, 0.0], [40.0, 0.0], [40.0, 40.0]]))
+
+    turn = corner.heading_change_deg(20.0, noise_deg=12.0)
+
+    assert turn > 60.0

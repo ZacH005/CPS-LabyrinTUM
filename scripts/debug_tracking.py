@@ -100,6 +100,10 @@ def main() -> None:
     prev_status = None
     paused = False
     t0 = time.monotonic()
+    loop_dts: list[float] = []
+    jumps_px: list[float] = []
+    prev_ball = None
+    prev_t = time.monotonic()
 
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +134,18 @@ def main() -> None:
                 print(f"seeded at {seed}")
 
             detection = tracker.detect(image)
+            now = time.monotonic()
+            if not paused:
+                loop_dts.append(now - prev_t)
+            prev_t = now
+            if detection.found:
+                if prev_ball is not None:
+                    jumps_px.append(float(np.hypot(
+                        detection.x_px - prev_ball[0],
+                        detection.y_px - prev_ball[1])))
+                prev_ball = (detection.x_px, detection.y_px)
+            else:
+                prev_ball = None
             dbg = dict(getattr(tracker.tracker, "debug", {}) or {}) \
                 if tracker.tracker is not None else {}
             status = dbg.get("status", "unseeded")
@@ -166,9 +182,11 @@ def main() -> None:
             if board_px is not None:
                 # magenta = calibrated board frame; must hug the play area
                 cv2.polylines(view, [board_px], True, (255, 0, 255), 2)
-            for (cx, cy, cr) in dbg.get("candidates", []):
-                cv2.circle(view, (int(cx), int(cy)), max(int(cr), 3),
-                           (0, 165, 255), 1)
+            for cand in dbg.get("candidates", []):
+                cx, cy, cr = cand[0], cand[1], cand[2]
+                source = cand[3] if len(cand) > 3 else "motion"
+                color = (0, 165, 255) if source == "motion" else (255, 255, 0)
+                cv2.circle(view, (int(cx), int(cy)), max(int(cr), 3), color, 1)
             if tracker.roi:
                 pts = np.array(tracker.roi, dtype=np.int32)
                 cv2.polylines(view, [pts], True, (255, 255, 0), 1)
@@ -180,8 +198,12 @@ def main() -> None:
 
             color = {"detected": (0, 255, 0), "predicted": (0, 200, 255),
                      "lost": (0, 0, 255)}.get(status, (200, 200, 200))
+            recent = loop_dts[-30:]
+            loop_fps = (len(recent) / max(sum(recent), 1e-9)) if recent else 0.0
+            last_jump = jumps_px[-1] if jumps_px else 0.0
             lines = [
-                f"status: {status}   miss streak: {dbg.get('miss_streak', '-')}",
+                f"status: {status}   miss streak: {dbg.get('miss_streak', '-')}"
+                f"   loop: {loop_fps:.0f} fps   jump: {last_jump:.0f} px/frame",
                 f"glint at track: {glint}   gate (min_specular): {gate}",
                 f"candidates: motion {dbg.get('n_motion', '-')} + "
                 f"highlight {dbg.get('n_highlight', '-')}  |  rejected: "
@@ -225,6 +247,18 @@ def main() -> None:
     total = sum(status_counts.values())
     print("\n===== tracking debug report =====")
     print(f"frames: {total}   log: {log_path}")
+    if loop_dts:
+        fps = 1.0 / max(float(np.median(loop_dts)), 1e-9)
+        print(f"processing loop: median {fps:.0f} fps "
+              f"(camera mode is irrelevant if the loop is slower)")
+    if jumps_px:
+        j = np.array(jumps_px)
+        print(f"ball movement between processed frames: median "
+              f"{np.median(j):.0f} px, p95 {np.percentile(j, 95):.0f} px, "
+              f"max {j.max():.0f} px")
+        print(f"  -> jump gates (max_jump_px etc.) must comfortably exceed "
+              f"the p95; current max_jump_px is "
+              f"{tracker.max_jump_px:.0f}")
     for k, v in status_counts.items():
         if v:
             print(f"  {k}: {v} ({100 * v / max(total, 1):.0f}%)")

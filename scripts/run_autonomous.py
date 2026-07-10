@@ -206,6 +206,8 @@ def main() -> None:
     stall_min_duration_s = float(config.control.get("stall_min_duration_s", 0.3))
     stall_speed_mm_s = float(config.control.get("stall_speed_mm_s", 8.0))
     stall_kick_ramp_per_s = float(config.control.get("stall_kick_ramp_per_s", 0.15))
+    corner_noise_deg = float(config.control.get("corner_noise_deg", 6.0))
+    corner_span_mm = float(config.control.get("corner_span_mm", 30.0))
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
@@ -383,7 +385,9 @@ def main() -> None:
                     if mode == "velocity":
                         path_point = path.point_at_progress_mm(progress)
                         tangent = path.tangent_at_progress_mm(progress)
-                        turn_deg = path.heading_change_deg(progress)
+                        turn_deg = path.heading_change_deg(
+                            progress, span_mm=corner_span_mm,
+                            noise_deg=corner_noise_deg)
                         wall_scale = (wall_map.speed_scale(board_xy)
                                       if wall_map is not None else 1.0)
                         board_cmd, v_des = velocity_follower.command(
@@ -396,7 +400,9 @@ def main() -> None:
                         carrot_x = ""
                         carrot_y = ""
                     elif mode == "carrot":
-                        turn_deg = path.heading_change_deg(progress)
+                        turn_deg = path.heading_change_deg(
+                            progress, span_mm=corner_span_mm,
+                            noise_deg=corner_noise_deg)
                         wall_scale = (wall_map.speed_scale(board_xy)
                                       if wall_map is not None else 1.0)
                         target, _carrot_lookahead = choose_carrot_point(

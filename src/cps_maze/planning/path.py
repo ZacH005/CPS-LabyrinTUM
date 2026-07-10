@@ -113,21 +113,29 @@ class WaypointPath:
         return d / n
 
     def heading_change_deg(self, progress_mm: float, span_mm: float = 30.0,
-                           step_mm: float = 5.0) -> float:
+                           step_mm: float = 5.0, noise_deg: float = 6.0) -> float:
         """Total turning over the next span_mm (0 = straight).
 
         Accumulates |heading change| between sub-samples rather than
         comparing endpoint tangents: in a chicane the two opposite turns
         cancel at the endpoints, which would report "straight" and let the
         ball barrel through at full speed. Used to slow down before corners
-        AND chicanes."""
+        AND chicanes.
+
+        noise_deg is a per-step deadband: an auto-traced path has small
+        annotation zigzags, and summing their absolute angles makes straights
+        read as phantom corners (observed as the ball randomly slowing down
+        on straight sections). Turning below the deadband per step is
+        ignored; a real corner concentrates far more than noise_deg into a
+        single step and still registers."""
         total = 0.0
         prev = self.tangent_at_progress_mm(progress_mm)
         steps = max(int(span_mm / step_mm), 1)
         for i in range(1, steps + 1):
             cur = self.tangent_at_progress_mm(progress_mm + i * step_mm)
             cos_angle = float(np.clip(np.dot(prev, cur), -1.0, 1.0))
-            total += float(np.degrees(np.arccos(cos_angle)))
+            step_deg = float(np.degrees(np.arccos(cos_angle)))
+            total += max(0.0, step_deg - noise_deg)
             prev = cur
         return total
 

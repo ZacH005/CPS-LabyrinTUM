@@ -33,9 +33,13 @@ vision:
   # as scripts/pipeline.py, built for holes that look like the ball);
   # "bright_blob" = original threshold detector.
   tracker: "pipeline"
-  # Specular gate for the pipeline tracker: ball glints ~254, holes ~150-215.
-  # Lower this if lighting is dim and the ball stops being detected.
-  min_specular: 241
+  # Specular gate for the pipeline tracker. Measured on this rig with
+  # debug_tracking: ball glints 243 when still, everything else <= ~210.
+  min_specular: 237
+  # Motion blur smears the glint exactly when the ball moves fast (observed
+  # dips to ~194 while tracked). Motion-cue candidates are already strong
+  # evidence (moving, round, ball-sized), so they get a lower gate.
+  motion_min_specular: 185
   # Optional confusers/ROI JSON from `pipeline.py --calibrate`; loaded if present.
   confusers_file: "calibration/live_confusers.json"
   # Demo tracking policy: use click-to-seed and reject implausible jumps
@@ -44,12 +48,16 @@ vision:
   auto_reseed: false
   seed_r: 12
   report_predicted: false
-  max_jump_px: 35
-  max_search_px: 60
+  # Jump gates are in px per PROCESSED frame. The control loop runs well
+  # below the camera's 120fps (detect + draw + log), so a fast roll moves
+  # the ball 40-60px between processed frames; gates must tolerate that or
+  # fast motion gets rejected as an implausible jump (= lost ball).
+  max_jump_px: 60
+  max_search_px: 120
   search_growth: 1.15
   max_predict_frames: 2
-  max_velocity_px_per_frame: 35
-  max_single_frame_jump_px: 45
+  max_velocity_px_per_frame: 70
+  max_single_frame_jump_px: 90
   allow_global_reacquire: false
   template_min_score: 0.55
   template_search_px: 45
@@ -75,7 +83,16 @@ control:
   mode: "carrot"
   v_max_mm_s: 30.0       # cruise speed on straights; raise only when reliable
   min_speed_frac: 0.35   # floor on cornering/near-wall crawl speed
-  corner_slow_deg: 70.0  # brake harder for smaller accumulated turn angles
+  # Corner braking, calibrated on the real traced path (2026-07-10): with
+  # the old span 30 / slow_deg 70 the accumulated turning exceeded the full-
+  # slowdown threshold on 70% of the route - the ball crawled almost
+  # everywhere and slowdowns felt random. These values discriminate: crawl
+  # floor on 17% of the route (the actual corners), full speed on 41%.
+  corner_slow_deg: 100.0  # accumulated turning that maps to full slowdown
+  corner_span_mm: 15.0    # how far ahead turning is accumulated (~0.5s warning)
+  # Per-step deadband when accumulating turning: the auto-traced line has
+  # small zigzags, and counting them makes straights read as phantom corners.
+  corner_noise_deg: 12.0
   k_lat: 1.6             # pull toward centerline (per mm of cross-track)
   lat_v_max_mm_s: 18.0
   k_vel: 0.012           # tilt per mm/s of velocity error

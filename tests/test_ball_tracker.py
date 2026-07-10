@@ -109,3 +109,28 @@ def test_live_pipeline_does_not_report_predicted_frames_by_default():
 
     assert seeded.found is True
     assert predicted.found is False
+
+
+def test_moving_ball_with_blurred_glint_passes_motion_gate():
+    # Motion blur dims the glint exactly when the ball moves fast: the
+    # motion cue must accept a candidate whose peak is below the static
+    # highlight gate but above the (lower) motion gate.
+    tracker = BallTracker(
+        (20, 20),
+        min_specular=237,
+        motion_min_specular=185,
+        max_jump=60,
+        max_single_frame_jump_px=90,
+        allow_global_reacquire=False,
+    )
+    f0 = np.zeros((100, 100), dtype=np.uint8)
+    cv2.circle(f0, (20, 20), 4, 200, -1)  # blurred glint: 200 < 237
+    assert tracker.update(f0)[3] == "seed"
+
+    f1 = np.zeros((100, 100), dtype=np.uint8)
+    cv2.circle(f1, (45, 20), 4, 200, -1)  # moved 25px, still dim
+
+    x, _y, _r, status = tracker.update(f1)
+
+    assert status == "detected"
+    assert abs(x - 45) < 6

@@ -106,7 +106,8 @@ class BallTracker:
     def __init__(self, seed_xy, seed_r=9, max_jump=35, max_search=60,
                  search_growth=1.15, min_specular=225, max_predict_frames=8,
                  static_confusers=None, roi=None, max_velocity_px_per_frame=35,
-                 max_single_frame_jump_px=45, allow_global_reacquire=True):
+                 max_single_frame_jump_px=45, allow_global_reacquire=True,
+                 motion_min_specular=None):
         self.pos = np.array(seed_xy, dtype=float)
         self.vel = np.zeros(2)
         self.r = seed_r
@@ -114,6 +115,11 @@ class BallTracker:
         self.max_search = max_search
         self.search_growth = search_growth
         self.min_specular = min_specular
+        # Motion blur smears the glint exactly when the ball moves fast, so
+        # motion-cue candidates (already strong evidence: a moving, round,
+        # ball-sized blob) get a lower brightness gate than raw highlights.
+        self.motion_min_specular = (motion_min_specular if motion_min_specular
+                                    is not None else max(min_specular - 50, 150))
         self.max_predict_frames = max_predict_frames
         self.max_velocity_px_per_frame = max_velocity_px_per_frame
         self.max_single_frame_jump_px = max_single_frame_jump_px
@@ -173,10 +179,12 @@ class BallTracker:
             return self.pos[0], self.pos[1], self.r, "seed"
 
         # union of two independent cues: motion (fast-moving ball) and raw
-        # appearance (stationary/slow ball, where motion diff shows nothing)
+        # appearance (stationary/slow ball, where motion diff shows nothing);
+        # candidates carry their source so each cue can use its own gate
         motion = motion_candidates(self.prev_gray, gray)
         highlight = highlight_candidates(gray, thresh=self.min_specular, ball_r=self.r)
-        raw_cands = motion + highlight
+        raw_cands = ([(x, y, r, "motion") for (x, y, r) in motion]
+                     + [(x, y, r, "highlight") for (x, y, r) in highlight])
         cands = self._filter_candidates(raw_cands)
 
         # Per-frame diagnostics: which stage rejected the ball this frame?
@@ -202,12 +210,14 @@ class BallTracker:
             self.debug["search_r"] = float(search_r)
             predicted = self.pos + self._bounded_velocity()
             best, best_d = None, None
-            for (x, y, r) in cands:
+            for (x, y, r, source) in cands:
                 d = np.hypot(x - predicted[0], y - predicted[1])
                 if not self._accepts_motion(x, y, predicted, search_r):
                     self.debug["n_rej_jump"] += 1
                     continue
-                if specular_peak(gray, x, y, r) < self.min_specular:
+                required = (self.motion_min_specular if source == "motion"
+                            else self.min_specular)
+                if specular_peak(gray, x, y, r) < required:
                     self.debug["n_rej_specular"] += 1
                     continue
                 if best_d is None or d < best_d:
@@ -215,7 +225,7 @@ class BallTracker:
         elif self.allow_global_reacquire:
             # long lost: reacquire anywhere via strongest specular hotspot
             best, best_peak = None, -1
-            for (x, y, r) in cands:
+            for (x, y, r, _source) in cands:
                 peak = specular_peak(gray, x, y, r)
                 if peak >= self.min_specular and peak > best_peak:
                     best, best_peak = (x, y, r), peak
@@ -281,6 +291,8 @@ class PipelineBallTracker:
 
     def __init__(self, config: dict):
         self.min_specular = int(config.get("min_specular", 225))
+        self.motion_min_specular = int(config.get(
+            "motion_min_specular", max(self.min_specular - 50, 150)))
         self.seed_r = float(config.get("seed_r", 9))
         self.auto_seed = bool(config.get("auto_seed", False))
         self.auto_reseed = bool(config.get("auto_reseed", False))
@@ -314,6 +326,7 @@ class PipelineBallTracker:
             max_search=self.max_search_px,
             search_growth=self.search_growth,
             min_specular=self.min_specular,
+            motion_min_specular=self.motion_min_specular,
             max_predict_frames=self.max_predict_frames,
             static_confusers=self.confusers,
             roi=self.roi,
