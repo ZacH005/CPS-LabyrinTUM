@@ -119,3 +119,38 @@ class HoleMap:
         speed = float(np.linalg.norm(velocity_mm_s))
         stopping = speed * speed / (2.0 * brake_accel_mm_s2)
         return stopping * safety_factor >= dist_entry
+
+
+def should_emergency_brake(
+    hole_map: HoleMap,
+    position_mm: np.ndarray,
+    velocity_mm_s: np.ndarray,
+    brake_accel_mm_s2: float,
+    path_tangent: np.ndarray,
+    cross_track_mm: float,
+    min_speed_mm_s: float = 15.0,
+    offroute_mm: float = 12.0,
+    align_deg: float = 40.0,
+    horizon_s: float = 0.8,
+) -> bool:
+    """Emergency-brake only for genuine run-offs, never for planned passes.
+
+    The annotated route legitimately threads between close holes whose
+    capture zones overlap the centerline. A ball rolling ALONG the route
+    there is a planned pass: the anticipatory speed cap already has it
+    crawling, and slamming the emergency brake instead creates a limit
+    cycle - brake, stall-kick, brake - that behaves like an invisible wall
+    (observed: ball shaking between two holes, or circling). So the
+    emergency only fires when the ball is actually LEAVING the route:
+    off the centerline, or moving misaligned with the path direction.
+    """
+    speed = float(np.linalg.norm(velocity_mm_s))
+    if speed < min_speed_mm_s:
+        return False
+    heading = velocity_mm_s / speed
+    aligned = float(np.dot(heading, path_tangent)) >= float(
+        np.cos(np.radians(align_deg)))
+    if aligned and cross_track_mm <= offroute_mm:
+        return False  # following the route: the crawl handles the pass
+    return hole_map.must_emergency_brake(
+        position_mm, velocity_mm_s, brake_accel_mm_s2, horizon_s)

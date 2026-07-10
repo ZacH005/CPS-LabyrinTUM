@@ -38,7 +38,7 @@ from cps_maze.control.pid import (
 )
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
-from cps_maze.planning.hazards import HoleMap
+from cps_maze.planning.hazards import HoleMap, should_emergency_brake
 from cps_maze.planning.path import WaypointPath
 from cps_maze.planning.walls import WallMap
 from cps_maze.vision.ball_pipeline import make_tracker
@@ -222,6 +222,10 @@ def main() -> None:
     hole_standoff_mm = float(config.control.get("hole_standoff_mm", 10.0))
     hole_brake_accel = float(config.control.get("hole_brake_accel_mm_s2", 250.0))
     hole_emergency = bool(config.control.get("hole_emergency_brake", True))
+    hole_emergency_offroute_mm = float(config.control.get(
+        "hole_emergency_offroute_mm", 12.0))
+    hole_emergency_align_deg = float(config.control.get(
+        "hole_emergency_align_deg", 40.0))
     # Braking authority: max_command is a DRIVING gentleness cap; stopping a
     # fast ball needs the full tilt range (the firmware still clamps).
     brake_max_command = float(config.control.get("brake_max_command", 1.0))
@@ -474,9 +478,13 @@ def main() -> None:
                     # (an emergency cannot wait for a ramp).
                     emergency = False
                     if (hole_emergency and speed_now > 15.0
-                            and hole_map.must_emergency_brake(
-                                state.position_mm, state.velocity_mm_s,
-                                hole_brake_accel)):
+                            and should_emergency_brake(
+                                hole_map, state.position_mm,
+                                state.velocity_mm_s, hole_brake_accel,
+                                path_tangent=path.tangent_at_progress_mm(progress),
+                                cross_track_mm=float(cross),
+                                offroute_mm=hole_emergency_offroute_mm,
+                                align_deg=hole_emergency_align_deg)):
                         emergency = True
                         hole_brake = "emergency"
                         board_cmd = ((-brake_max_command / speed_now)

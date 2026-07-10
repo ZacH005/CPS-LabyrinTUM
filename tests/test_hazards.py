@@ -61,3 +61,47 @@ def test_emergency_brake_only_when_stopping_distance_insufficient():
 
     # fast ball: stopping distance 150^2/500 = 45mm > 22mm - cannot stop
     assert holes.must_emergency_brake(pos, np.array([150.0, 0.0]), 250.0)
+
+
+def test_no_emergency_for_planned_pass_between_holes():
+    from cps_maze.planning.hazards import should_emergency_brake
+
+    # two holes whose capture zones overlap the route between them
+    holes = HoleMap(np.array([[60.0, -14.0, 8.0], [60.0, 14.0, 8.0]]),
+                    ball_radius_mm=6.0, margin_mm=4.0)
+    pos = np.array([30.0, 0.0])
+    vel = np.array([100.0, 0.0])      # rolling fast ALONG the route (+x)
+    tangent = np.array([1.0, 0.0])
+
+    # raw check would brake (trajectory enters a capture zone)...
+    assert holes.must_emergency_brake(pos, vel, 150.0)
+    # ...but the gate recognizes an on-route, aligned, planned pass
+    assert not should_emergency_brake(
+        holes, pos, vel, 150.0, path_tangent=tangent, cross_track_mm=2.0)
+
+
+def test_emergency_still_fires_for_genuine_runoff():
+    from cps_maze.planning.hazards import should_emergency_brake
+
+    holes = HoleMap(np.array([[60.0, -14.0, 8.0]]),
+                    ball_radius_mm=6.0, margin_mm=4.0)
+    pos = np.array([55.0, 20.0])
+    vel = np.array([10.0, -80.0])     # shooting toward the hole, off-tangent
+    tangent = np.array([1.0, 0.0])
+
+    assert should_emergency_brake(
+        holes, pos, vel, 150.0, path_tangent=tangent, cross_track_mm=3.0)
+
+
+def test_emergency_gate_respects_offroute_condition():
+    from cps_maze.planning.hazards import should_emergency_brake
+
+    holes = HoleMap(np.array([[60.0, 0.0, 8.0]]),
+                    ball_radius_mm=6.0, margin_mm=4.0)
+    pos = np.array([30.0, 0.0])
+    vel = np.array([60.0, 0.0])
+    tangent = np.array([1.0, 0.0])
+
+    # aligned but far OFF the route: not a planned pass -> may brake
+    assert should_emergency_brake(
+        holes, pos, vel, 150.0, path_tangent=tangent, cross_track_mm=25.0)
