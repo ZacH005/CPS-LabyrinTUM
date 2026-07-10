@@ -120,6 +120,7 @@ class BallTracker:
         self.allow_global_reacquire = allow_global_reacquire
         self.miss_streak = 0
         self.prev_gray = None
+        self.debug: dict = {"status": "seed"}  # per-frame diagnostics
         # Precomputed once (see compute_static_confusers) and permanently
         # excluded -- this is what tells "always-bright board feature" apart
         # from "the ball, currently sitting still", which a purely reactive
@@ -168,26 +169,46 @@ class BallTracker:
     def update(self, gray):
         if self.prev_gray is None:
             self.prev_gray = gray
+            self.debug = {"status": "seed"}
             return self.pos[0], self.pos[1], self.r, "seed"
 
         # union of two independent cues: motion (fast-moving ball) and raw
         # appearance (stationary/slow ball, where motion diff shows nothing)
-        cands = motion_candidates(self.prev_gray, gray) + highlight_candidates(
-            gray, thresh=self.min_specular, ball_r=self.r
-        )
-        cands = self._filter_candidates(cands)
+        motion = motion_candidates(self.prev_gray, gray)
+        highlight = highlight_candidates(gray, thresh=self.min_specular, ball_r=self.r)
+        raw_cands = motion + highlight
+        cands = self._filter_candidates(raw_cands)
+
+        # Per-frame diagnostics: which stage rejected the ball this frame?
+        # Consumed by scripts/debug_tracking.py; costs nothing measurable.
+        self.debug = {
+            "n_motion": len(motion),
+            "n_highlight": len(highlight),
+            "n_rej_roi_confuser": len(raw_cands) - len(cands),
+            "n_rej_jump": 0,
+            "n_rej_specular": 0,
+            "search_r": 0.0,
+            "peak_at_track": specular_peak(gray, self.pos[0], self.pos[1],
+                                           max(self.r, 6)),
+            "miss_streak": self.miss_streak,
+            "candidates": cands,
+        }
 
         if self.miss_streak <= self.max_predict_frames:
             search_r = min(
                 self.max_jump * (self.search_growth ** self.miss_streak),
                 self.max_search,
             )
+            self.debug["search_r"] = float(search_r)
             predicted = self.pos + self._bounded_velocity()
             best, best_d = None, None
             for (x, y, r) in cands:
                 d = np.hypot(x - predicted[0], y - predicted[1])
-                if (not self._accepts_motion(x, y, predicted, search_r)
-                        or specular_peak(gray, x, y, r) < self.min_specular):
+                if not self._accepts_motion(x, y, predicted, search_r):
+                    self.debug["n_rej_jump"] += 1
+                    continue
+                if specular_peak(gray, x, y, r) < self.min_specular:
+                    self.debug["n_rej_specular"] += 1
                     continue
                 if best_d is None or d < best_d:
                     best, best_d = (x, y, r), d
@@ -213,13 +234,17 @@ class BallTracker:
             self.pos = new_pos
             self.r = 0.7 * self.r + 0.3 * best[2]
             self.miss_streak = 0
+            self.debug["status"] = "detected"
             return self.pos[0], self.pos[1], self.r, "detected"
 
         self.miss_streak += 1
+        self.debug["miss_streak"] = self.miss_streak
         if self.miss_streak <= self.max_predict_frames:
             self.pos = self.pos + self._bounded_velocity()
+            self.debug["status"] = "predicted"
             return self.pos[0], self.pos[1], self.r, "predicted"
 
+        self.debug["status"] = "lost"
         return self.pos[0], self.pos[1], self.r, "lost"
 
 
@@ -278,6 +303,8 @@ class PipelineBallTracker:
         self.tracker: BallTracker | None = None
         self._last_gray: np.ndarray | None = None
         self._template: np.ndarray | None = None
+        self.last_template_score: float = float("nan")  # diagnostics
+        self.template_rescued: bool = False  # diagnostics
 
     def _make_tracker(self, seed_xy) -> BallTracker:
         return BallTracker(
@@ -330,6 +357,7 @@ class PipelineBallTracker:
         result = cv2.matchTemplate(gray[y0:y1, x0:x1], self._template,
                                    cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        self.last_template_score = float(max_val)  # diagnostics
         if max_val < self.template_min_score:
             return None
         return (float(x0 + max_loc[0] + tw / 2), float(y0 + max_loc[1] + th / 2))
@@ -351,6 +379,8 @@ class PipelineBallTracker:
         # appearance assist: correlate the seed template near the track. It
         # rescues "lost"/"predicted" states and corrects false locks (a glint
         # matches brightness but not the ball's appearance).
+        self.last_template_score = float("nan")
+        self.template_rescued = False
         hit = self._match_template(gray, (x, y))
         if hit is not None:
             correction = float(np.hypot(hit[0] - x, hit[1] - y))
@@ -360,6 +390,7 @@ class PipelineBallTracker:
                 self.tracker.pos = np.array(hit, dtype=float)
                 self.tracker.miss_streak = 0
                 x, y, status = hit[0], hit[1], "detected"
+                self.template_rescued = True
 
         if status == "lost":
             if self.auto_reseed:

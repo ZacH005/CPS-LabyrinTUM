@@ -205,6 +205,7 @@ def main() -> None:
                           else float(config.control.get("command_slew_per_s", 3.0)))
     stall_min_duration_s = float(config.control.get("stall_min_duration_s", 0.3))
     stall_speed_mm_s = float(config.control.get("stall_speed_mm_s", 8.0))
+    stall_kick_ramp_per_s = float(config.control.get("stall_kick_ramp_per_s", 0.15))
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
@@ -212,6 +213,7 @@ def main() -> None:
         stall_speed_mm_s=stall_speed_mm_s,
         stall_dist_mm=float(config.control.get("stall_dist_mm", 8.0)),
         stall_min_duration_s=stall_min_duration_s,
+        stall_kick_ramp_per_s=stall_kick_ramp_per_s,
     ))
     velocity_follower = VelocityPathFollower(VelocityFollowerConfig(
         v_max_mm_s=v_max,
@@ -226,6 +228,7 @@ def main() -> None:
         stall_request_speed_mm_s=float(config.control.get(
             "stall_request_speed_mm_s", 1.0)),
         stall_min_duration_s=stall_min_duration_s,
+        stall_kick_ramp_per_s=stall_kick_ramp_per_s,
     ))
     carrot_follower = CarrotVelocityPathFollower(CarrotVelocityFollowerConfig(
         v_max_mm_s=v_max,
@@ -238,6 +241,7 @@ def main() -> None:
         stall_request_speed_mm_s=float(config.control.get(
             "stall_request_speed_mm_s", 1.0)),
         stall_min_duration_s=stall_min_duration_s,
+        stall_kick_ramp_per_s=stall_kick_ramp_per_s,
     ))
     print(f"controller: {mode}" + (
         f" (v_max {v_max:.0f} mm/s)" if mode in ("carrot", "velocity") else ""))

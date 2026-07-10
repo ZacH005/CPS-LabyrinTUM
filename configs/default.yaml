@@ -101,6 +101,12 @@ control:
   stall_request_speed_mm_s: 1.0
   stall_dist_mm: 8.0
   stall_min_duration_s: 0.3
+  # Escalate the kick while the stall persists (+X command per second of
+  # stall), so spots whose breakaway tilt exceeds stall_kick still unstick.
+  # The kick timer also has hysteresis so velocity-estimate noise cannot
+  # toggle it on/off (the on/off toggling was visible as board jitter with
+  # the ball sitting balanced).
+  stall_kick_ramp_per_s: 0.15
   # Max |servo command| change per second sent to hardware; smooths sudden
   # jumps (stiction kicks, re-association) so corners aren't punched through.
   command_slew_per_s: 3.0

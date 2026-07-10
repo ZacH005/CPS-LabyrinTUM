@@ -5,6 +5,51 @@ from dataclasses import dataclass
 import numpy as np
 
 
+class StallKicker:
+    """Decides when and how hard to apply the anti-stiction breakaway kick.
+
+    Fixes two failure modes of a naive per-frame kick:
+
+    1. Timer jitter: the velocity ESTIMATE flickers above the stall threshold
+       from measurement noise while the ball is physically parked. A naive
+       timer resets on every flicker, toggling the kick on/off at a few Hz -
+       the board visibly jitters while the average tilt never exceeds
+       breakaway, so the ball just sits there "balanced". Hysteresis: the
+       timer only resets once the ball is CLEARLY moving (release_factor x
+       threshold); inside the noise band it holds its value.
+
+    2. Insufficient kick: a fixed magnitude below the local breakaway tilt
+       stalls forever. The kick escalates (ramp_per_s) the longer the stall
+       persists, until the ball physically breaks free (the caller's command
+       cap still bounds it).
+    """
+
+    def __init__(self, kick: float, speed_mm_s: float, min_duration_s: float,
+                 ramp_per_s: float = 0.0, release_factor: float = 2.0):
+        self.kick = kick
+        self.speed_mm_s = speed_mm_s
+        self.min_duration_s = min_duration_s
+        self.ramp_per_s = ramp_per_s
+        self.release_factor = release_factor
+        self.low_speed_time_s = 0.0
+
+    def reset(self) -> None:
+        self.low_speed_time_s = 0.0
+
+    def update(self, speed_mm_s: float, dt_s: float) -> float:
+        """Returns 0.0 (no kick) or the kick magnitude to enforce."""
+        if speed_mm_s >= self.release_factor * self.speed_mm_s:
+            self.low_speed_time_s = 0.0  # clearly rolling: real release
+        elif speed_mm_s < self.speed_mm_s:
+            self.low_speed_time_s += max(dt_s, 0.0)
+        # else: inside the noise band - hold the timer (hysteresis)
+
+        if self.kick <= 0.0 or self.low_speed_time_s < self.min_duration_s:
+            return 0.0
+        stalled_for = self.low_speed_time_s - self.min_duration_s
+        return self.kick + self.ramp_per_s * stalled_for
+
+
 @dataclass
 class PathFollowerConfig:
     kp: float
@@ -26,6 +71,7 @@ class PathFollowerConfig:
     # A single slow frame also happens during ordinary deceleration (e.g.
     # easing toward a target); only a sustained stop is real static friction.
     stall_min_duration_s: float = 0.3
+    stall_kick_ramp_per_s: float = 0.0  # escalate kick while stall persists
 
 
 @dataclass
@@ -50,15 +96,21 @@ class VelocityFollowerConfig:
     # See PathFollowerConfig.stall_min_duration_s: a slow instant is normal
     # while braking into a corner; only a sustained stop is real stiction.
     stall_min_duration_s: float = 0.03
+    stall_kick_ramp_per_s: float = 0.0  # escalate kick while stall persists
 
 
 class VelocityPathFollower:
     def __init__(self, config: VelocityFollowerConfig):
         self.config = config
-        self.low_speed_time_s = 0.0
+        self.kicker = StallKicker(
+            kick=config.stall_kick,
+            speed_mm_s=config.stall_speed_mm_s,
+            min_duration_s=config.stall_min_duration_s,
+            ramp_per_s=config.stall_kick_ramp_per_s,
+        )
 
     def reset(self) -> None:
-        self.low_speed_time_s = 0.0
+        self.kicker.reset()
 
     def command(
         self,
@@ -91,23 +143,16 @@ class VelocityPathFollower:
         v_desired = v_forward + v_lat
         raw = cfg.k_vel * (v_desired - velocity_mm_s)
 
+        # Stiction: kick only after low speed PERSISTS (a slow instant also
+        # happens during intentional corner braking), with hysteresis against
+        # velocity-estimate noise and escalation while the stall lasts.
         speed = float(np.linalg.norm(velocity_mm_s))
-        if speed < cfg.stall_speed_mm_s:
-            self.low_speed_time_s += max(dt_s, 0.0)
-        else:
-            self.low_speed_time_s = 0.0
-
-        # Stiction: apply the breakaway kick only once slow motion has
-        # PERSISTED (real static friction). A single slow frame also happens
-        # every time the ball brakes into an intentional corner/wall
-        # slowdown - that is not stiction and punching a full kick there is
-        # what flings the ball wide and into holes at corners.
-        if (cfg.stall_kick > 0.0
-                and self.low_speed_time_s >= cfg.stall_min_duration_s
-                and float(np.linalg.norm(v_desired)) > cfg.stall_request_speed_mm_s):
+        kick = self.kicker.update(speed, dt_s)
+        v_des_norm = float(np.linalg.norm(v_desired))
+        if kick > 0.0 and v_des_norm > cfg.stall_request_speed_mm_s:
             magnitude = float(np.linalg.norm(raw))
-            if 1e-9 < magnitude < cfg.stall_kick:
-                raw = raw * (cfg.stall_kick / magnitude)
+            if magnitude < kick:
+                raw = (kick / v_des_norm) * v_desired  # stable direction
 
         return np.clip(raw, -cfg.max_command, cfg.max_command), v_desired
 
@@ -125,15 +170,23 @@ class CarrotVelocityFollowerConfig:
     stall_speed_mm_s: float = 8.0
     stall_request_speed_mm_s: float = 1.0
     stall_min_duration_s: float = 0.3
+    # Escalate the kick while the stall persists (per second of stall), so a
+    # spot whose breakaway tilt exceeds stall_kick still gets un-stuck.
+    stall_kick_ramp_per_s: float = 0.0
 
 
 class CarrotVelocityPathFollower:
     def __init__(self, config: CarrotVelocityFollowerConfig):
         self.config = config
-        self.low_speed_time_s = 0.0
+        self.kicker = StallKicker(
+            kick=config.stall_kick,
+            speed_mm_s=config.stall_speed_mm_s,
+            min_duration_s=config.stall_min_duration_s,
+            ramp_per_s=config.stall_kick_ramp_per_s,
+        )
 
     def reset(self) -> None:
-        self.low_speed_time_s = 0.0
+        self.kicker.reset()
 
     def command(
         self,
@@ -164,17 +217,15 @@ class CarrotVelocityPathFollower:
         raw = cfg.k_vel * (v_desired - velocity_mm_s)
 
         speed = float(np.linalg.norm(velocity_mm_s))
-        if speed < cfg.stall_speed_mm_s:
-            self.low_speed_time_s += max(dt_s, 0.0)
-        else:
-            self.low_speed_time_s = 0.0
-
-        if (cfg.stall_kick > 0.0
-                and self.low_speed_time_s >= cfg.stall_min_duration_s
-                and float(np.linalg.norm(v_desired)) > cfg.stall_request_speed_mm_s):
+        kick = self.kicker.update(speed, dt_s)
+        v_des_norm = float(np.linalg.norm(v_desired))
+        if kick > 0.0 and v_des_norm > cfg.stall_request_speed_mm_s:
             magnitude = float(np.linalg.norm(raw))
-            if 1e-9 < magnitude < cfg.stall_kick:
-                raw = raw * (cfg.stall_kick / magnitude)
+            if magnitude < kick:
+                # kick along the DESIRED direction (stable, toward the
+                # carrot), not along the raw command whose direction jitters
+                # with velocity-estimate noise while the ball is parked
+                raw = (kick / v_des_norm) * v_desired
 
         return np.clip(raw, -cfg.max_command, cfg.max_command), v_desired
 
@@ -183,11 +234,16 @@ class PathFollower:
     def __init__(self, config: PathFollowerConfig):
         self.config = config
         self.integral = np.zeros(2)
-        self.low_speed_time_s = 0.0
+        self.kicker = StallKicker(
+            kick=config.stall_kick,
+            speed_mm_s=config.stall_speed_mm_s,
+            min_duration_s=config.stall_min_duration_s,
+            ramp_per_s=config.stall_kick_ramp_per_s,
+        )
 
     def reset(self) -> None:
         self.integral = np.zeros(2)
-        self.low_speed_time_s = 0.0
+        self.kicker.reset()
 
     def command(
         self,
@@ -212,16 +268,10 @@ class PathFollower:
 
         raw = cfg.kp * error + cfg.ki * self.integral - cfg.kd * velocity_mm_s
 
-        if speed < cfg.stall_speed_mm_s:
-            self.low_speed_time_s += max(dt_s, 0.0)
-        else:
-            self.low_speed_time_s = 0.0
-
-        if (cfg.stall_kick > 0.0
-                and self.low_speed_time_s >= cfg.stall_min_duration_s
-                and err_dist > cfg.stall_dist_mm):
+        kick = self.kicker.update(speed, dt_s)
+        if kick > 0.0 and err_dist > cfg.stall_dist_mm:
             magnitude = float(np.linalg.norm(raw))
-            if 1e-9 < magnitude < cfg.stall_kick:
-                raw = raw * (cfg.stall_kick / magnitude)
+            if magnitude < kick:
+                raw = (kick / err_dist) * error  # stable direction: at target
 
         return np.clip(raw, -cfg.max_command, cfg.max_command)

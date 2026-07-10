@@ -5,9 +5,41 @@ from cps_maze.control.pid import (
     CarrotVelocityPathFollower,
     PathFollower,
     PathFollowerConfig,
+    StallKicker,
     VelocityFollowerConfig,
     VelocityPathFollower,
 )
+
+
+def test_stall_kicker_hysteresis_survives_noise_spikes():
+    # Velocity-estimate noise flickers above the stall threshold while the
+    # ball is physically parked. A naive timer resets on every flicker,
+    # toggling the kick on/off at a few Hz (visible as board jitter with the
+    # ball balanced). The timer must HOLD inside the noise band.
+    kicker = StallKicker(kick=0.3, speed_mm_s=8.0, min_duration_s=0.3)
+
+    for i in range(30):  # 0.6s: slow frames with noise spikes into 8..16
+        speed = 12.0 if i % 3 == 2 else 2.0  # spike inside the noise band
+        kick = kicker.update(speed, 0.02)
+    assert kick > 0.0, "noise inside the band must not reset the stall timer"
+
+    # a CLEAR movement (above release threshold) does reset it
+    kicker.update(20.0, 0.02)
+    assert kicker.update(2.0, 0.02) == 0.0
+
+
+def test_stall_kicker_escalates_while_stall_persists():
+    kicker = StallKicker(kick=0.3, speed_mm_s=8.0, min_duration_s=0.3,
+                         ramp_per_s=0.15)
+    kick_early, kick_late = 0.0, 0.0
+    for i in range(100):  # 2.0s stalled
+        k = kicker.update(0.0, 0.02)
+        if i == 20:   # 0.42s: just past min duration
+            kick_early = k
+        if i == 99:   # 2.0s
+            kick_late = k
+    assert 0.29 < kick_early < 0.35
+    assert kick_late > kick_early + 0.15, "kick must escalate during a long stall"
 
 
 def test_path_follower_clamps_command():
