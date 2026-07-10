@@ -70,16 +70,17 @@ vision:
   smoothing_alpha: 0.6
 
 control:
-  # "velocity" (default): track a target speed along the path tangent; tilt
-  # corrects velocity error, so the board automatically brakes the ball
-  # before corners. "position": legacy lookahead PD.
-  mode: "velocity"
+  # "carrot" (default): chase a real lookahead point with velocity feedback.
+  # "velocity": track local path tangent; "position": legacy lookahead PD.
+  mode: "carrot"
   v_max_mm_s: 30.0       # cruise speed on straights; raise only when reliable
-  min_speed_frac: 0.15   # floor on cornering/near-wall crawl speed
+  min_speed_frac: 0.35   # floor on cornering/near-wall crawl speed
   corner_slow_deg: 70.0  # brake harder for smaller accumulated turn angles
   k_lat: 1.6             # pull toward centerline (per mm of cross-track)
   lat_v_max_mm_s: 18.0
-  k_vel: 0.010           # tilt per mm/s of velocity error
+  k_vel: 0.012           # tilt per mm/s of velocity error
+  carrot_lookahead_mm: 35.0
+  carrot_min_lookahead_mm: 12.0
   lookahead_mm: 18.0
   kp: 0.015
   kd: 0.006
@@ -93,7 +94,11 @@ control:
   # once low speed has PERSISTED (a single slow frame also happens during
   # ordinary braking into a corner, which is not stiction).
   stall_kick: 0.30
-  stall_speed_mm_s: 5.0
+  stall_speed_mm_s: 8.0
+  # Velocity/carrot mode: still apply the stiction kick during intentional
+  # corner/wall crawl. This must stay below v_max_mm_s * min_speed_frac
+  # (currently 10.5 mm/s), otherwise full slowdowns disable breakaway tilt.
+  stall_request_speed_mm_s: 1.0
   stall_dist_mm: 8.0
   stall_min_duration_s: 0.3
   # Max |servo command| change per second sent to hardware; smooths sudden

@@ -19,7 +19,7 @@ class PathFollowerConfig:
     # command up to at least this magnitude so it always breaks free.
     # Set from axis_check observations (~the amplitude that reliably moved
     # the ball). 0 disables.
-    stall_kick: float = 0.0
+    stall_kick: float = 0.30
     stall_speed_mm_s: float = 8.0   # "stalled" when slower than this
     stall_dist_mm: float = 8.0      # ...and further than this from target
     # Require the low-speed condition to PERSIST this long before kicking.
@@ -43,12 +43,13 @@ class VelocityFollowerConfig:
     k_lat: float = 2.5             # lateral velocity per mm of cross-track error (1/s)
     lat_v_max_mm_s: float = 30.0   # cap on the corrective lateral velocity
     k_vel: float = 0.010           # tilt command per mm/s of velocity error
-    max_command: float = 0.45
-    stall_kick: float = 0.30       # min |command| when stuck but asked to move
-    stall_speed_mm_s: float = 8.0
+    max_command: float = 1
+    stall_kick: float = 1       # min |command| when stuck but asked to move
+    stall_speed_mm_s: float = 8.00
+    stall_request_speed_mm_s: float = 8.00
     # See PathFollowerConfig.stall_min_duration_s: a slow instant is normal
     # while braking into a corner; only a sustained stop is real stiction.
-    stall_min_duration_s: float = 0.3
+    stall_min_duration_s: float = 0.03
 
 
 class VelocityPathFollower:
@@ -103,7 +104,74 @@ class VelocityPathFollower:
         # what flings the ball wide and into holes at corners.
         if (cfg.stall_kick > 0.0
                 and self.low_speed_time_s >= cfg.stall_min_duration_s
-                and float(np.linalg.norm(v_desired)) > 5.0):
+                and float(np.linalg.norm(v_desired)) > cfg.stall_request_speed_mm_s):
+            magnitude = float(np.linalg.norm(raw))
+            if 1e-9 < magnitude < cfg.stall_kick:
+                raw = raw * (cfg.stall_kick / magnitude)
+
+        return np.clip(raw, -cfg.max_command, cfg.max_command), v_desired
+
+
+@dataclass
+class CarrotVelocityFollowerConfig:
+    """Velocity controller that aims at a lookahead point on the path."""
+
+    v_max_mm_s: float = 45.0
+    min_speed_frac: float = 0.25
+    corner_slow_deg: float = 110.0
+    k_vel: float = 0.010
+    max_command: float = 0.45
+    stall_kick: float = 0.30
+    stall_speed_mm_s: float = 8.0
+    stall_request_speed_mm_s: float = 1.0
+    stall_min_duration_s: float = 0.3
+
+
+class CarrotVelocityPathFollower:
+    def __init__(self, config: CarrotVelocityFollowerConfig):
+        self.config = config
+        self.low_speed_time_s = 0.0
+
+    def reset(self) -> None:
+        self.low_speed_time_s = 0.0
+
+    def command(
+        self,
+        position_mm: np.ndarray,
+        velocity_mm_s: np.ndarray,
+        carrot_mm: np.ndarray,
+        heading_change_deg: float,
+        dt_s: float = 0.0,
+        extra_speed_scale: float = 1.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Returns (board tilt command, desired velocity).
+
+        Unlike the local-tangent follower, this controller points desired
+        motion at a real lookahead point so the target marker stays ahead of
+        the ball and the board tilts decisively toward it.
+        """
+        cfg = self.config
+        to_carrot = carrot_mm - position_mm
+        distance = float(np.linalg.norm(to_carrot))
+        if distance < 1e-9:
+            v_desired = np.zeros(2)
+        else:
+            direction = to_carrot / distance
+            corner_scale = 1.0 - heading_change_deg / max(cfg.corner_slow_deg, 1e-9)
+            speed_scale = max(cfg.min_speed_frac, min(corner_scale, extra_speed_scale))
+            v_desired = cfg.v_max_mm_s * speed_scale * direction
+
+        raw = cfg.k_vel * (v_desired - velocity_mm_s)
+
+        speed = float(np.linalg.norm(velocity_mm_s))
+        if speed < cfg.stall_speed_mm_s:
+            self.low_speed_time_s += max(dt_s, 0.0)
+        else:
+            self.low_speed_time_s = 0.0
+
+        if (cfg.stall_kick > 0.0
+                and self.low_speed_time_s >= cfg.stall_min_duration_s
+                and float(np.linalg.norm(v_desired)) > cfg.stall_request_speed_mm_s):
             magnitude = float(np.linalg.norm(raw))
             if 1e-9 < magnitude < cfg.stall_kick:
                 raw = raw * (cfg.stall_kick / magnitude)

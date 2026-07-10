@@ -11,3 +11,13 @@ def test_velocity_estimator_computes_smoothed_velocity():
 
     assert np.allclose(state.velocity_mm_s, [5.0, 0.0])
 
+
+def test_velocity_estimator_reset_clears_previous_sample():
+    estimator = LowPassVelocityEstimator(alpha=1.0)
+
+    estimator.update(np.array([0.0, 0.0]), timestamp_s=0.0)
+    estimator.update(np.array([10.0, 0.0]), timestamp_s=2.0)
+    estimator.reset()
+    state = estimator.update(np.array([100.0, 0.0]), timestamp_s=3.0)
+
+    assert np.allclose(state.velocity_mm_s, [0.0, 0.0])

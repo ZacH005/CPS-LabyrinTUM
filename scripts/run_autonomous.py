@@ -29,6 +29,8 @@ from cps_maze.camera import CameraCapture
 from cps_maze.config import load_config
 from cps_maze.control.axis_map import AxisMap
 from cps_maze.control.pid import (
+    CarrotVelocityFollowerConfig,
+    CarrotVelocityPathFollower,
     PathFollower,
     PathFollowerConfig,
     VelocityFollowerConfig,
@@ -51,6 +53,33 @@ def load_holes(path: Path) -> np.ndarray:
     rows = np.genfromtxt(path, delimiter=",", names=True)
     rows = np.atleast_1d(rows)
     return np.column_stack([rows["x_mm"], rows["y_mm"], rows["radius_mm"]]).astype(float)
+
+
+def choose_carrot_point(
+    path: WaypointPath,
+    position_mm: np.ndarray,
+    progress_mm: float,
+    lookahead_mm: float,
+    min_lookahead_mm: float,
+    wall_map: WallMap | None = None,
+    step_mm: float = 5.0,
+) -> tuple[np.ndarray, float]:
+    """Pick the furthest line-of-sight lookahead point allowed by walls."""
+    lookahead = max(float(lookahead_mm), 0.0)
+    min_lookahead = max(0.0, min(float(min_lookahead_mm), lookahead))
+    if wall_map is None:
+        return path.point_at_progress_mm(progress_mm + lookahead), lookahead
+
+    step = max(float(step_mm), 1e-6)
+    current = lookahead
+    while current > min_lookahead:
+        point = path.point_at_progress_mm(progress_mm + current)
+        if not wall_map.line_blocked(position_mm, point):
+            return point, current
+        current = max(min_lookahead, current - step)
+
+    point = path.point_at_progress_mm(progress_mm + min_lookahead)
+    return point, min_lookahead
 
 
 def draw_overlay(
@@ -104,9 +133,10 @@ def main() -> None:
     parser.add_argument("--stall-kick", type=float, default=None,
                         help="Min command magnitude when the ball is stalled off-target "
                              "(the tilt that breaks static friction, ~0.3)")
-    parser.add_argument("--controller", choices=["velocity", "position"], default=None,
-                        help="velocity (default): track a speed along the path tangent, "
-                             "brakes into corners; position: legacy lookahead PD")
+    parser.add_argument("--controller", choices=["carrot", "velocity", "position"], default=None,
+                        help="carrot (default): chase a lookahead path point with "
+                             "velocity feedback; velocity: track local path tangent; "
+                             "position: legacy lookahead PD")
     parser.add_argument("--v-max", type=float, default=None,
                         help="Cruise speed mm/s for the velocity controller")
     parser.add_argument("--command-slew", type=float, default=None,
@@ -156,6 +186,11 @@ def main() -> None:
                    else float(config.control["max_command"]))
     lookahead_mm = (args.lookahead if args.lookahead is not None
                     else float(config.control["lookahead_mm"]))
+    carrot_lookahead_mm = (args.lookahead if args.lookahead is not None
+                           else float(config.control.get(
+                               "carrot_lookahead_mm", lookahead_mm)))
+    carrot_min_lookahead_mm = float(config.control.get(
+        "carrot_min_lookahead_mm", min(12.0, carrot_lookahead_mm)))
 
     if 0.0 < max_command < stall_kick:
         print(f"WARNING: --max-command {max_command} is BELOW stall_kick "
@@ -163,7 +198,7 @@ def main() -> None:
               f"ball may never move. Use max-command >= {stall_kick}, or lower "
               f"stall_kick deliberately.")
 
-    mode = args.controller or str(config.control.get("mode", "velocity")).lower()
+    mode = args.controller or str(config.control.get("mode", "carrot")).lower()
     v_max = (args.v_max if args.v_max is not None
              else float(config.control.get("v_max_mm_s", 45.0)))
     command_slew_per_s = (args.command_slew if args.command_slew is not None
@@ -188,15 +223,32 @@ def main() -> None:
         max_command=max_command,
         stall_kick=stall_kick,
         stall_speed_mm_s=stall_speed_mm_s,
+        stall_request_speed_mm_s=float(config.control.get(
+            "stall_request_speed_mm_s", 1.0)),
         stall_min_duration_s=stall_min_duration_s,
     ))
-    print(f"controller: {mode}" + (f" (v_max {v_max:.0f} mm/s)" if mode == "velocity" else ""))
+    carrot_follower = CarrotVelocityPathFollower(CarrotVelocityFollowerConfig(
+        v_max_mm_s=v_max,
+        min_speed_frac=float(config.control.get("min_speed_frac", 0.25)),
+        corner_slow_deg=float(config.control.get("corner_slow_deg", 110.0)),
+        k_vel=float(config.control.get("k_vel", 0.010)),
+        max_command=max_command,
+        stall_kick=stall_kick,
+        stall_speed_mm_s=stall_speed_mm_s,
+        stall_request_speed_mm_s=float(config.control.get(
+            "stall_request_speed_mm_s", 1.0)),
+        stall_min_duration_s=stall_min_duration_s,
+    ))
+    print(f"controller: {mode}" + (
+        f" (v_max {v_max:.0f} mm/s)" if mode in ("carrot", "velocity") else ""))
     estimator = LowPassVelocityEstimator()
     total_length = float(path.cumulative_lengths[-1])
 
     log_fields = [
         "timestamp_s", "found", "x_mm", "y_mm", "vx_mm_s", "vy_mm_s",
         "target_x_mm", "target_y_mm", "progress_mm",
+        "carrot_x_mm", "carrot_y_mm", "desired_vx_mm_s", "desired_vy_mm_s",
+        "cross_track_mm", "turn_deg", "wall_speed_scale",
         "board_cmd_x", "board_cmd_y", "yaw_command", "pitch_command",
     ]
 
@@ -275,8 +327,10 @@ def main() -> None:
                     progress_est = None  # ball may have been moved: re-associate
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
+                    estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
+                    carrot_follower.reset()
                 detection = tracker.detect(frame.image)
                 servo_cmd = np.zeros(2)
                 target = None
@@ -335,8 +389,31 @@ def main() -> None:
                         )
                         # overlay: aim marker a half-second of travel ahead
                         target = state.position_mm + 0.5 * v_des
+                        carrot_x = ""
+                        carrot_y = ""
+                    elif mode == "carrot":
+                        turn_deg = path.heading_change_deg(progress)
+                        wall_scale = (wall_map.speed_scale(board_xy)
+                                      if wall_map is not None else 1.0)
+                        target, _carrot_lookahead = choose_carrot_point(
+                            path, state.position_mm, progress,
+                            carrot_lookahead_mm, carrot_min_lookahead_mm,
+                            wall_map,
+                        )
+                        board_cmd, v_des = carrot_follower.command(
+                            state.position_mm, state.velocity_mm_s,
+                            target, turn_deg, dt_s,
+                            extra_speed_scale=wall_scale,
+                        )
+                        carrot_x = target[0]
+                        carrot_y = target[1]
                     else:
+                        turn_deg = 0.0
+                        wall_scale = 1.0
+                        v_des = np.zeros(2)
                         target = path.point_at_progress_mm(progress + lookahead_mm)
+                        carrot_x = ""
+                        carrot_y = ""
                         board_cmd = follower.command(state.position_mm,
                                                      state.velocity_mm_s,
                                                      target, dt_s)
@@ -364,6 +441,10 @@ def main() -> None:
                         "vx_mm_s": state.velocity_mm_s[0], "vy_mm_s": state.velocity_mm_s[1],
                         "target_x_mm": target[0], "target_y_mm": target[1],
                         "progress_mm": progress,
+                        "carrot_x_mm": carrot_x, "carrot_y_mm": carrot_y,
+                        "desired_vx_mm_s": v_des[0], "desired_vy_mm_s": v_des[1],
+                        "cross_track_mm": cross, "turn_deg": turn_deg,
+                        "wall_speed_scale": wall_scale,
                         "board_cmd_x": board_cmd[0], "board_cmd_y": board_cmd[1],
                         "yaw_command": servo_cmd[0], "pitch_command": servo_cmd[1],
                     })
@@ -380,12 +461,18 @@ def main() -> None:
                     # slew limiter would jump from a stale nonzero command.
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
+                    estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
+                    carrot_follower.reset()
                     logger.write({
                         "timestamp_s": frame.timestamp_s, "found": False,
                         "x_mm": "", "y_mm": "", "vx_mm_s": "", "vy_mm_s": "",
                         "target_x_mm": "", "target_y_mm": "", "progress_mm": "",
+                        "carrot_x_mm": "", "carrot_y_mm": "",
+                        "desired_vx_mm_s": "", "desired_vy_mm_s": "",
+                        "cross_track_mm": "", "turn_deg": "",
+                        "wall_speed_scale": "",
                         "board_cmd_x": "", "board_cmd_y": "",
                         "yaw_command": 0.0, "pitch_command": 0.0,
                     })

@@ -21,6 +21,11 @@ class LowPassVelocityEstimator:
         self.previous_timestamp_s: float | None = None
         self.velocity_mm_s = np.zeros(2, dtype=float)
 
+    def reset(self) -> None:
+        self.previous_position = None
+        self.previous_timestamp_s = None
+        self.velocity_mm_s = np.zeros(2, dtype=float)
+
     def update(self, position_mm: np.ndarray, timestamp_s: float) -> BallState:
         if self.previous_position is not None and self.previous_timestamp_s is not None:
             dt = max(timestamp_s - self.previous_timestamp_s, 1e-3)

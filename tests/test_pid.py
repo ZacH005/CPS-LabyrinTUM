@@ -1,6 +1,8 @@
 import numpy as np
 
 from cps_maze.control.pid import (
+    CarrotVelocityFollowerConfig,
+    CarrotVelocityPathFollower,
     PathFollower,
     PathFollowerConfig,
     VelocityFollowerConfig,
@@ -89,6 +91,38 @@ def test_velocity_follower_stall_kick_requires_persistence():
     assert np.isclose(command[0], 0.5)
 
 
+def test_velocity_follower_stall_kick_applies_during_corner_crawl():
+    cfg = VelocityFollowerConfig(
+        v_max_mm_s=30.0,
+        min_speed_frac=0.15,
+        corner_slow_deg=70.0,
+        k_lat=0.0,
+        k_vel=0.001,
+        max_command=1.0,
+        stall_kick=0.5,
+        stall_speed_mm_s=8.0,
+        stall_request_speed_mm_s=1.0,
+        stall_min_duration_s=0.3,
+    )
+    follower = VelocityPathFollower(cfg)
+    path_point = np.array([0.0, 0.0])
+    tangent = np.array([1.0, 0.0])
+
+    command = None
+    for _ in range(20):
+        command, desired = follower.command(
+            position_mm=np.array([0.0, 0.0]),
+            velocity_mm_s=np.array([0.0, 0.0]),
+            path_point_mm=path_point,
+            tangent=tangent,
+            heading_change_deg=90.0,
+            dt_s=0.02,
+        )
+
+    assert np.isclose(np.linalg.norm(desired), 4.5)
+    assert np.isclose(command[0], 0.5)
+
+
 def test_velocity_follower_reset_clears_persistence_timer():
     cfg = VelocityFollowerConfig(
         v_max_mm_s=30.0, k_lat=0.0, k_vel=0.001,
@@ -116,3 +150,113 @@ def test_velocity_follower_reset_clears_persistence_timer():
     )
     assert abs(command[0]) < 0.05
 
+
+def test_carrot_follower_commands_toward_carrot():
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=20.0, k_vel=0.1, max_command=10.0,
+        stall_kick=0.0,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+
+    command, desired = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([0.0, 0.0]),
+        carrot_mm=np.array([10.0, 0.0]),
+        heading_change_deg=0.0,
+    )
+
+    assert np.allclose(desired, [20.0, 0.0])
+    assert np.allclose(command, [2.0, 0.0])
+
+
+def test_carrot_follower_brakes_when_ball_is_too_fast():
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=20.0, k_vel=0.1, max_command=10.0,
+        stall_kick=0.0,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+
+    command, desired = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([30.0, 0.0]),
+        carrot_mm=np.array([10.0, 0.0]),
+        heading_change_deg=0.0,
+    )
+
+    assert np.allclose(desired, [20.0, 0.0])
+    assert np.allclose(command, [-1.0, 0.0])
+
+
+def test_carrot_follower_corner_slowdown_keeps_carrot_direction():
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=20.0, min_speed_frac=0.25, corner_slow_deg=100.0,
+        k_vel=0.1, max_command=10.0, stall_kick=0.0,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+
+    command, desired = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([0.0, 0.0]),
+        carrot_mm=np.array([0.0, 10.0]),
+        heading_change_deg=90.0,
+    )
+
+    assert np.isclose(np.linalg.norm(desired), 5.0)
+    assert np.allclose(desired, [0.0, 5.0])
+    assert np.allclose(command, [0.0, 0.5])
+
+
+def test_carrot_follower_stall_kick_requires_persistence():
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=30.0, k_vel=0.001,
+        max_command=1.0, stall_kick=0.5, stall_speed_mm_s=8.0,
+        stall_request_speed_mm_s=1.0, stall_min_duration_s=0.3,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+
+    command, _ = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([0.0, 0.0]),
+        carrot_mm=np.array([10.0, 0.0]),
+        heading_change_deg=0.0,
+        dt_s=0.02,
+    )
+    assert abs(command[0]) < 0.05
+
+    for _ in range(20):
+        command, _ = follower.command(
+            position_mm=np.array([0.0, 0.0]),
+            velocity_mm_s=np.array([0.0, 0.0]),
+            carrot_mm=np.array([10.0, 0.0]),
+            heading_change_deg=0.0,
+            dt_s=0.02,
+        )
+    assert np.isclose(command[0], 0.5)
+
+
+def test_carrot_follower_reset_clears_persistence_timer():
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=30.0, k_vel=0.001,
+        max_command=1.0, stall_kick=0.5, stall_speed_mm_s=8.0,
+        stall_request_speed_mm_s=1.0, stall_min_duration_s=0.3,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+
+    for _ in range(20):
+        follower.command(
+            position_mm=np.array([0.0, 0.0]),
+            velocity_mm_s=np.array([0.0, 0.0]),
+            carrot_mm=np.array([10.0, 0.0]),
+            heading_change_deg=0.0,
+            dt_s=0.02,
+        )
+    follower.reset()
+
+    command, _ = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([0.0, 0.0]),
+        carrot_mm=np.array([10.0, 0.0]),
+        heading_change_deg=0.0,
+        dt_s=0.02,
+    )
+    assert abs(command[0]) < 0.05
