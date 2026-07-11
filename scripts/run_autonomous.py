@@ -192,6 +192,24 @@ def main() -> None:
         wall_map = WallMap.load(wall_mask_file)
         print(f"wall mask loaded from {wall_mask_file} "
               "(cross-wall rejection + wall slowdown active)")
+        # Consistency self-check: the route centerline must lie in free
+        # space. A stale mask (recalibrated homography, old mask) draws
+        # phantom walls that block the association's line-of-sight checks -
+        # observed as huge cross-track errors and the ball stuck at the
+        # very start of the route.
+        total_mm = float(path.cumulative_lengths[-1])
+        probe = np.arange(0.0, total_mm, 4.0)
+        on_wall = sum(
+            1 for s in probe if wall_map.is_wall(path.point_at_progress_mm(s)))
+        frac = on_wall / max(len(probe), 1)
+        if frac > 0.02:
+            print(f"WARNING: {100 * frac:.0f}% of the route reads as INSIDE "
+                  "a wall - the wall mask is stale for the current "
+                  "homography/path. Rebuild it now: python "
+                  "scripts/build_wall_mask.py  (running without it is "
+                  "better than running with a wrong one)")
+            wall_map = None
+            print("wall mask DISABLED for this run.")
     else:
         print("note: no wall mask - run scripts/build_wall_mask.py to enable "
               "cross-wall association rejection and wall-proximity slowdown")

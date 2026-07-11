@@ -273,6 +273,23 @@ def main() -> None:
         path_instructions = "Click the start of the printed line, inspect trace, press s to save, then q."
     run_step("Rebuild Path CSV", path_command, args.yes, path_instructions)
 
+    # The wall mask is derived from the homography like path/holes: a stale
+    # mask draws phantom walls that block the path association's line-of-
+    # sight checks (observed: the route's start section reading as "inside a
+    # wall" and the ball unable to leave hole 1).
+    run_step(
+        "Rebuild Wall Mask",
+        [
+            sys.executable,
+            str(SCRIPTS / "build_wall_mask.py"),
+            "--config",
+            args.config,
+        ],
+        args.yes,
+        "Ball OFF the board. Drag threshold until walls are solid red, "
+        "press s to save, then q.",
+    )
+
     video = record_with_launcher(args, timestamp)
 
     run_step(
