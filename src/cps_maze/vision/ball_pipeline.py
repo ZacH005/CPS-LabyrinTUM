@@ -323,6 +323,14 @@ class PipelineBallTracker:
         confusers_file = config.get("confusers_file", "calibration/live_confusers.json")
         if confusers_file and Path(confusers_file).exists():
             self.confusers, self.roi = load_calibration(confusers_file)
+            if len(self.confusers) > 30:
+                print(f"WARNING: {len(self.confusers)} static confusers loaded "
+                      f"from {confusers_file} - a healthy board has ~5-15. "
+                      "This usually means the BALL was in the calibration "
+                      "video and blacklisted its own resting spots; candidates "
+                      "inside those zones are permanently rejected (= random "
+                      "track losses). Re-record the calibration video with NO "
+                      "ball on the board and rerun pipeline.py --calibrate.")
         roi_file = config.get("roi_file")
         if roi_file and Path(roi_file).exists():
             self.roi = load_roi_file(roi_file)

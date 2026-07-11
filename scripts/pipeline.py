@@ -247,8 +247,11 @@ def main():
     ap.add_argument("--calibrate", metavar="SOURCE_VIDEO",
                      help="offline step: scan a full recorded video for static confusers "
                           "(holes/pegs that glint like the ball) and save them -- run this "
-                          "once against footage you already have in full. Not usable on a "
-                          "live stream, which by definition has no 'whole video' to scan.")
+                          "once against footage you already have in full. Record the video "
+                          "with NO ball on the board: a ball lingering anywhere for >10%% "
+                          "of the recording blacklists its own resting spots and the live "
+                          "tracker then loses it there. Not usable on a live stream, which "
+                          "by definition has no 'whole video' to scan.")
     ap.add_argument("--confuser-thresh", type=int, default=225,
                     help="brightness threshold used by --calibrate")
     ap.add_argument("--confuser-freq-thresh", type=float, default=0.10,
