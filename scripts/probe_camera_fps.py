@@ -111,7 +111,37 @@ def main() -> None:
     parser.add_argument("--device", type=int, default=None,
                         help="override device index")
     parser.add_argument("--seconds", type=float, default=3.0)
+    parser.add_argument("--via-runner", action="store_true",
+                        help="measure through the real CameraCapture class "
+                             "(the production path, honors the MSMF backend)")
     args = parser.parse_args()
+
+    # --via-runner: measure through the ACTUAL CameraCapture class the runner
+    # uses (honors camera.backend, now MSMF on Windows). This is the true
+    # production path - if this reads fast, the run loop will too.
+    if args.via_runner:
+        from cps_maze.camera import CameraCapture
+        cfg = load_config(args.config)
+        if args.device is not None:
+            cfg.camera["device_index"] = args.device
+        print("Opening via CameraCapture (production path). MSMF can take up "
+              "to ~30 s to open - be patient.")
+        with CameraCapture(cfg.camera) as cam:
+            obs = cam.observed_settings()
+            print(f"  negotiated: {obs['width']}x{obs['height']} "
+                  f"fourcc={obs['fourcc']} driver_fps={obs['fps']:.0f}")
+            for _ in range(5):
+                cam.read()
+            frames = 0
+            start = perf_counter()
+            while perf_counter() - start < max(args.seconds, 3.0):
+                cam.read()
+                frames += 1
+            elapsed = perf_counter() - start
+            measured = frames / elapsed
+            flag = "  <-- FAST, run loop fixed" if measured >= 40 else "  <-- still slow"
+            print(f"  MEASURED {measured:.1f} fps through CameraCapture{flag}")
+        return
 
     device = args.device
     width, height, fps = 1280, 800, 120
