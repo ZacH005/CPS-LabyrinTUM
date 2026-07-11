@@ -378,3 +378,15 @@ def test_carrot_driving_commands_not_limited_by_abs():
         carrot_mm=np.array([100.0, 0.0]), heading_change_deg=0.0,
     )
     assert cmd[0] > 0.5  # not squashed to the ABS ceiling
+
+
+def test_stall_kicker_accumulates_inside_noise_band():
+    # A parked ball whose velocity-estimate noise floor sits INSIDE the
+    # hysteresis band must still build stall time (observed: 22s stalls at
+    # 0.1 commands because the band held the timer at zero forever).
+    kicker = StallKicker(kick=0.3, speed_mm_s=5.0, min_duration_s=0.3)
+
+    kick = 0.0
+    for _ in range(50):  # 1.0s entirely inside the band (5..10 mm/s)
+        kick = kicker.update(7.0, 0.02)
+    assert kick > 0.0, "band-resident noise must not suppress the kick forever"

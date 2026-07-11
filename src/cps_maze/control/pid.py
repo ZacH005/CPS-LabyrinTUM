@@ -42,7 +42,12 @@ class StallKicker:
             self.low_speed_time_s = 0.0  # clearly rolling: real release
         elif speed_mm_s < self.speed_mm_s:
             self.low_speed_time_s += max(dt_s, 0.0)
-        # else: inside the noise band - hold the timer (hysteresis)
+        else:
+            # noise band: accumulate at half rate instead of holding. A
+            # parked ball whose velocity-estimate noise floor sits INSIDE
+            # the band would otherwise never build stall time and never get
+            # kicked (observed: 22 s stalls at 0.1 commands).
+            self.low_speed_time_s += 0.5 * max(dt_s, 0.0)
 
         if self.kick <= 0.0 or self.low_speed_time_s < self.min_duration_s:
             return 0.0
