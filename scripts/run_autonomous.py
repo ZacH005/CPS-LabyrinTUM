@@ -590,8 +590,10 @@ def main() -> None:
                         if recovery_planner is not None:
                             if float(cross) >= recovery_cross_track_mm:
                                 recovery_reason = "offroute"
-                            elif wall_map is not None and wall_map.line_blocked(
-                                    state.position_mm, recovery_goal):
+                            elif (wall_map is not None
+                                  and speed_now < recovery_stall_speed_mm_s
+                                  and wall_map.line_blocked(
+                                      state.position_mm, recovery_goal)):
                                 recovery_reason = "wall"
                             elif (wall_distance <= recovery_wall_distance_mm
                                   and speed_now < recovery_stall_speed_mm_s):
@@ -603,10 +605,18 @@ def main() -> None:
                                 recovery_path = recovery_planner.plan(
                                     state.position_mm, recovery_goal)
                                 if recovery_path is not None and len(recovery_path) >= 2:
-                                    target = progress_limited_point_along_polyline(
+                                    candidate = progress_limited_point_along_polyline(
                                         recovery_path, path, progress,
                                         recovery_follow_mm,
                                         recovery_max_backtrack_mm)
+                                    _, cand_off = path.nearest_progress_and_distance_mm(
+                                        candidate, progress)
+                                    # reject detours that increase distance
+                                    # to the route (observed: carrot sent to
+                                    # mid-board around a hole capture zone,
+                                    # driving the ball into hole 2)
+                                    if cand_off <= max(float(cross), 8.0) + 5.0:
+                                        target = candidate
                         board_cmd, v_des = carrot_follower.command(
                             state.position_mm, state.velocity_mm_s,
                             target, 0.0, dt_s,
@@ -631,8 +641,10 @@ def main() -> None:
                         if recovery_planner is not None:
                             if float(cross) >= recovery_cross_track_mm:
                                 recovery_reason = "offroute"
-                            elif wall_map is not None and wall_map.line_blocked(
-                                    state.position_mm, recovery_goal):
+                            elif (wall_map is not None
+                                  and speed_now < recovery_stall_speed_mm_s
+                                  and wall_map.line_blocked(
+                                      state.position_mm, recovery_goal)):
                                 recovery_reason = "wall"
                             elif (wall_distance <= recovery_wall_distance_mm
                                   and speed_now < recovery_stall_speed_mm_s):
@@ -644,10 +656,18 @@ def main() -> None:
                                 recovery_path = recovery_planner.plan(
                                     state.position_mm, recovery_goal)
                                 if recovery_path is not None and len(recovery_path) >= 2:
-                                    target = progress_limited_point_along_polyline(
+                                    candidate = progress_limited_point_along_polyline(
                                         recovery_path, path, progress,
                                         recovery_follow_mm,
                                         recovery_max_backtrack_mm)
+                                    _, cand_off = path.nearest_progress_and_distance_mm(
+                                        candidate, progress)
+                                    # reject detours that increase distance
+                                    # to the route (observed: carrot sent to
+                                    # mid-board around a hole capture zone,
+                                    # driving the ball into hole 2)
+                                    if cand_off <= max(float(cross), 8.0) + 5.0:
+                                        target = candidate
                         carrot_x = ""
                         carrot_y = ""
                         board_cmd = follower.command(state.position_mm,
