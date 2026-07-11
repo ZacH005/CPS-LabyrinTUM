@@ -326,6 +326,17 @@ def main() -> None:
     brake_cmd_floor = float(config.control.get("brake_cmd_floor", 0.06))
     plan_latency_s = float(config.control.get("plan_latency_s", 0.35))
     slowzone_max_command = float(config.control.get("slowzone_max_command", 0.55))
+    # Composure: when control gets violent (emergency, or speed far above
+    # plan), stop pursuing progress - hold position, damp the ball to rest,
+    # THEN resume. Prevents the freak-out cascade: rough brake -> too fast
+    # -> unstable -> pushed forward anyway -> hole.
+    stabilize_enabled = bool(config.control.get("stabilize_enabled", True))
+    stabilize_margin = float(config.control.get("stabilize_overspeed_margin_mm_s", 20.0))
+    stabilize_exit_speed = float(config.control.get("stabilize_exit_speed_mm_s", 5.0))
+    stabilize_still_needed = float(config.control.get("stabilize_still_s", 0.6))
+    stabilize_max_s = float(config.control.get("stabilize_max_s", 3.0))
+    stabilize_kp = float(config.control.get("stabilize_kp", 0.010))
+    stabilize_kd = float(config.control.get("stabilize_kd", 0.012))
 
     # One coherent speed PLAN for the whole route, computed once: hole
     # passes get a committed moderate speed (not a crawl), every slowdown
@@ -426,6 +437,10 @@ def main() -> None:
     progress_est = None  # last known path progress; keeps association local
     prev_servo_cmd = np.zeros(2)  # for command-slew limiting
     recovery_low_speed_s = 0.0
+    stabilize_active = False
+    stabilize_still = 0.0
+    stabilize_entered = 0.0
+    freeze_point = np.zeros(2)
     outcome = "stopped by user"
 
     mouse_state: dict = {}
@@ -487,6 +502,7 @@ def main() -> None:
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
                     recovery_low_speed_s = 0.0
+                    stabilize_active = False
                     estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
@@ -710,6 +726,39 @@ def main() -> None:
                         board_cmd = ((-brake_max_command / speed_now)
                                      * state.velocity_mm_s)
 
+                    # Composure state machine: enter on violence, hold
+                    # position and damp to rest, resume only once still.
+                    if stabilize_enabled:
+                        overspeed = speed_now > max(2.0 * target_speed,
+                                                    target_speed + stabilize_margin)
+                        if (emergency or overspeed) and not stabilize_active:
+                            stabilize_active = True
+                            freeze_point = state.position_mm.copy()
+                            stabilize_entered = monotonic()
+                            stabilize_still = 0.0
+                        if stabilize_active and not emergency:
+                            if speed_now < stabilize_exit_speed:
+                                stabilize_still += max(dt_s, 0.0)
+                            else:
+                                stabilize_still = 0.0
+                            if (stabilize_still >= stabilize_still_needed
+                                    or monotonic() - stabilize_entered
+                                    > stabilize_max_s):
+                                stabilize_active = False  # calm: resume path
+                                follower.reset()
+                                velocity_follower.reset()
+                                carrot_follower.reset()
+                            else:
+                                # hold position with damping; no progress
+                                hold_err = freeze_point - state.position_mm
+                                board_cmd = (stabilize_kp * hold_err
+                                             - stabilize_kd * state.velocity_mm_s)
+                                m = float(np.linalg.norm(board_cmd))
+                                hold_cap = 0.21 + 0.012 * speed_now
+                                if m > hold_cap:
+                                    board_cmd = board_cmd * (hold_cap / m)
+                                hole_brake = "stabilize"
+
                     # a command opposing the motion is a brake: allow the
                     # full tilt range and a faster slew (stopping a fast
                     # ball cannot wait for the gentle driving ramp)
@@ -728,7 +777,9 @@ def main() -> None:
                             command_slew_per_s, brake_slew_per_s)
                     prev_servo_cmd = servo_cmd.copy()
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
-                    if hole_brake == "emergency":
+                    if hole_brake == "stabilize":
+                        status += "  STABILIZING"
+                    elif hole_brake == "emergency":
                         status += "  EMERGENCY BRAKE"
                     elif hole_brake == "slow":
                         status += "  hole ahead"
@@ -771,6 +822,7 @@ def main() -> None:
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
                     recovery_low_speed_s = 0.0
+                    stabilize_active = False
                     estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
