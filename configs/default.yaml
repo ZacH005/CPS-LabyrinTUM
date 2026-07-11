@@ -86,13 +86,13 @@ control:
   # "velocity": track local path tangent; "position": legacy lookahead PD.
   mode: "carrot"
   v_max_mm_s: 25  # cruise speed on straights; raise only when reliable
-  min_speed_frac: 0.35   # floor on cornering/near-wall crawl speed
+  min_speed_frac: 0.55   # floor on cornering/near-wall crawl speed
   # Corner braking, calibrated on the real traced path (2026-07-10): with
   # the old span 30 / slow_deg 70 the accumulated turning exceeded the full-
   # slowdown threshold on 70% of the route - the ball crawled almost
   # everywhere and slowdowns felt random. These values discriminate: crawl
   # floor on 17% of the route (the actual corners), full speed on 41%.
-  corner_slow_deg: 75  # accumulated turning that maps to full slowdown
+  corner_slow_deg: 95  # accumulated turning that maps to full slowdown
   corner_span_mm: 15.0    # how far ahead turning is accumulated (~0.5s warning)
   # Per-step deadband when accumulating turning: the auto-traced line has
   # small zigzags, and counting them makes straights read as phantom corners.
@@ -131,19 +131,19 @@ control:
   # The kick timer also has hysteresis so velocity-estimate noise cannot
   # toggle it on/off (the on/off toggling was visible as board jitter with
   # the ball sitting balanced).
-  stall_kick_ramp_per_s: 0.2
+  stall_kick_ramp_per_s: 0.25
   # Max |servo command| change per second sent to hardware; smooths sudden
   # jumps (stiction kicks, re-association) so corners aren't punched through.
   command_slew_per_s: 1.5
-  max_command: 1
+  max_command: 0.9
   # --- Braking authority ---
   # max_command is a gentleness cap for DRIVING. Stopping a fast ball needs
   # more tilt than driving does: commands that oppose the current motion may
   # use the full firmware range, and reverse much faster than the driving
   # slew (reversing +0.45 -> -0.45 at 3.0/s wastes 300 ms = 60 mm at
   # 200 mm/s). The firmware pulse clamp still bounds everything.
-  brake_max_command: 1
-  brake_slew_per_s: 10
+  brake_max_command: 0.9
+  brake_slew_per_s: 12
   # --- Route speed profile (replaces the per-frame reactive hole cap) ---
   # Computed ONCE at startup over the whole route: hole passes, wall
   # clearance, corners, and goal approach become speed limits by place, then
@@ -153,15 +153,18 @@ control:
   # Committed speed THROUGH a hole pass. Deliberately not a crawl: slow
   # rolling near a hole maximizes exposure and stiction cycling; a moderate
   # committed speed crosses quickly and stably.
-  hole_pass_mm_s: 16.0
-  hole_slow_band_mm: 20.0   # ramp from cruise down to pass speed over this
-  profile_floor_mm_s: 12.0  # the plan never asks for slower than this
+  hole_pass_mm_s: 15.0
+  hole_slow_band_mm: 15.0   # ramp from cruise down to pass speed over this
+  # Latest pseudostuck run stalled in the 193-201mm corridor with target speed
+  # around 12mm/s and no local hole danger. Keep safe corridors rolling above
+  # the observed stiction-dominated crawl regime.
+  profile_floor_mm_s: 15.0  # the plan never asks for slower than this
   end_speed_mm_s: 10.0      # arrive gently at the goal
-  hole_margin_mm: 4.0       # extra capture clearance around each hole
-  ball_radius_mm: 6.0
+  hole_margin_mm: 2.0       # extra capture clearance around each hole
+  ball_radius_mm: 4.0
   # Achievable deceleration from board tilt; used for the profile's braking
   # and acceleration passes and the emergency stopping-distance check.
-  hole_brake_accel_mm_s2: 118
+  hole_brake_accel_mm_s2: 250
   # Reactive: full brake opposite the velocity (bypassing the slew limiter)
   # when the trajectory enters a hole and stopping distance exceeds the
   # distance to it.
@@ -178,10 +181,26 @@ control:
   # command has at least this much component away from the nearest wall. This
   # is a local unstick bias for outside-corner catches; it does not change
   # normal path following in open space.
-  wall_escape_distance_mm: 6.0
-  wall_escape_speed_mm_s: 8.0
+  wall_escape_distance_mm: 3.0
+  wall_escape_speed_mm_s: 15.0
   wall_escape_command: 0.22
   wall_escape_min_command: 0.08
+  # Local recovery planner: when the ball is off-route, stalled, or the
+  # marker is across a wall, plan a temporary A* path from the actual ball
+  # position to the current carrot/marker through wall- and hole-safe space.
+  recovery_astar_enabled: true
+  recovery_astar_grid_mm: 4.0
+  recovery_astar_follow_mm: 20.0
+  recovery_astar_goal_lookahead_mm: 35.0
+  recovery_astar_max_backtrack_mm: 4.0
+  recovery_astar_cross_track_mm: 15.0
+  recovery_astar_wall_mm: 4.0
+  recovery_astar_stall_speed_mm_s: 5.0
+  recovery_astar_stall_duration_s: 0.8
+  recovery_astar_wall_clearance_mm: 2.0
+  recovery_astar_hole_clearance_mm: 0.0
+  recovery_astar_max_snap_mm: 18.0
+  recovery_astar_max_expansions: 8000
 
 maze:
   # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,
