@@ -151,6 +151,12 @@ control:
   # ~flat by the time the ball stops.
   brake_cmd_per_mm_s: 0.012
   brake_cmd_floor: 0.06
+  # Calm control near holes: read the plan where the ball will be in
+  # plan_latency_s (brake INTO slow zones instead of after overshooting
+  # them), and cap command magnitude inside slow zones so corrections
+  # near holes are small and steady - control, not violent avoidance.
+  plan_latency_s: 0.35
+  slowzone_max_command: 0.55
   # --- Route speed profile (replaces the per-frame reactive hole cap) ---
   # Computed ONCE at startup over the whole route: hole passes, wall
   # clearance, corners, and goal approach become speed limits by place, then

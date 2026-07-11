@@ -324,6 +324,8 @@ def main() -> None:
     brake_slew_per_s = float(config.control.get("brake_slew_per_s", 10.0))
     brake_cmd_per_mm_s = float(config.control.get("brake_cmd_per_mm_s", 0.012))
     brake_cmd_floor = float(config.control.get("brake_cmd_floor", 0.06))
+    plan_latency_s = float(config.control.get("plan_latency_s", 0.35))
+    slowzone_max_command = float(config.control.get("slowzone_max_command", 0.55))
 
     # One coherent speed PLAN for the whole route, computed once: hole
     # passes get a committed moderate speed (not a crawl), every slowdown
@@ -540,7 +542,10 @@ def main() -> None:
                     # just tracks the planned speed at this progress.
                     hole_brake = ""
                     speed_now = float(np.linalg.norm(state.velocity_mm_s))
-                    target_speed = profile.speed_at(progress)
+                    # read the plan where the ball WILL be (control latency),
+                    # so slow zones are entered at plan speed, not discovered
+                    target_speed = profile.speed_at(
+                        progress + speed_now * plan_latency_s)
                     profile_scale = min(1.0, target_speed / max(v_max, 1e-6))
                     if profile_scale < 0.8:
                         hole_brake = "slow"
@@ -712,6 +717,10 @@ def main() -> None:
                         speed_now > 20.0
                         and float(np.dot(board_cmd, state.velocity_mm_s)) < 0.0)
                     cap = brake_max_command if braking else max_command
+                    if profile_scale < 0.75 and not emergency:
+                        # calm hands near holes: follow the path with small,
+                        # steady corrections; never slam inside a hole pass
+                        cap = min(cap, slowzone_max_command)
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -cap, cap)
                     if command_slew_per_s > 0.0 and dt_s > 0.0 and not emergency:
                         servo_cmd = slew_limit_command(
