@@ -32,6 +32,7 @@ from cps_maze.control.axis_map import (
     normalized_response_to_axis_map,
     snap_response_to_axis_map,
 )
+from cps_maze.control.trim import NeutralTrim
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.vision.ball_pipeline import make_tracker
 
@@ -201,10 +202,16 @@ def main() -> None:
             "Serial Monitor / runner / teleop holding the port, or pass "
             "--port COMxx.")
 
+    trim = NeutralTrim.load_if_exists()
+    if trim.yaw or trim.pitch:
+        print(f"neutral trim loaded: yaw={trim.yaw:+.3f} pitch={trim.pitch:+.3f} "
+              "- pulses ride on a LEVEL board")
+
     with CameraCapture(config.camera) as camera, ArduinoServoLink(
         port=port,
         baudrate=int(config.serial["baudrate"]),
         timeout_s=float(config.serial["timeout_s"]),
+        trim_yaw=trim.yaw, trim_pitch=trim.pitch,
     ) as link:
         time.sleep(2.0)  # Arduino reset after port open
         link.neutral()

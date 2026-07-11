@@ -36,6 +36,7 @@ from cps_maze.control.pid import (
     VelocityFollowerConfig,
     VelocityPathFollower,
 )
+from cps_maze.control.trim import NeutralTrim
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
 from cps_maze.planning.hazards import HoleMap, should_emergency_brake
@@ -350,6 +351,11 @@ def main() -> None:
     estimator = LowPassVelocityEstimator()
     total_length = float(path.cumulative_lengths[-1])
 
+    trim = NeutralTrim.load_if_exists()
+    if trim.yaw or trim.pitch:
+        print(f"neutral trim loaded: yaw={trim.yaw:+.3f} pitch={trim.pitch:+.3f} "
+              "(command 0,0 = level board)")
+
     if args.dry_run:
         serial_ctx: contextlib.AbstractContextManager = contextlib.nullcontext()
         print("DRY RUN: servos disabled, visualization only")
@@ -358,6 +364,7 @@ def main() -> None:
             port=args.port or config.serial["port"],
             baudrate=int(config.serial["baudrate"]),
             timeout_s=float(config.serial["timeout_s"]),
+            trim_yaw=trim.yaw, trim_pitch=trim.pitch,
         )
 
     start_time = monotonic()
