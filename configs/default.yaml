@@ -115,7 +115,11 @@ control:
   # once low speed has PERSISTED (a single slow frame also happens during
   # ordinary braking into a corner, which is not stiction).
   stall_kick: 0.30
-  stall_speed_mm_s: 8.0
+  # MUST stay below the speed profile's minimum (the runner clamps it if
+  # not): planned slow rolling through a hole pass must never be mistaken
+  # for a stall, or the kick launches the ball exactly where the plan wants
+  # it careful. This exact conflict caused the "spazzing" at hole passes.
+  stall_speed_mm_s: 5.0
   # Velocity/carrot mode: still apply the stiction kick during intentional
   # corner/wall crawl. This must stay below v_max_mm_s * min_speed_frac
   # (currently 10.5 mm/s), otherwise full slowdowns disable breakaway tilt.
@@ -140,22 +144,24 @@ control:
   # 200 mm/s). The firmware pulse clamp still bounds everything.
   brake_max_command: 0.7
   brake_slew_per_s: 10
-  # --- Hole awareness ---
-  # Anticipatory: scan the route this far ahead for passes near holes and
-  # cap speed by braking physics (v = sqrt(2 a d)), so deceleration starts
-  # early instead of when the hole is already close.
-  hole_horizon_mm: 80.0
-  hole_standoff_mm: 7        # be at crawl speed this far before the pass
-  hole_margin_mm: 4.0           # extra capture clearance around each hole
+  # --- Route speed profile (replaces the per-frame reactive hole cap) ---
+  # Computed ONCE at startup over the whole route: hole passes, wall
+  # clearance, corners, and goal approach become speed limits by place, then
+  # a backward pass guarantees every slowdown is reachable by braking and a
+  # forward pass smooths acceleration. The controller tracks the planned
+  # speed at its current progress: one smooth plan, no dueling caps.
+  # Committed speed THROUGH a hole pass. Deliberately not a crawl: slow
+  # rolling near a hole maximizes exposure and stiction cycling; a moderate
+  # committed speed crosses quickly and stably.
+  hole_pass_mm_s: 16.0
+  hole_slow_band_mm: 20.0   # ramp from cruise down to pass speed over this
+  profile_floor_mm_s: 12.0  # the plan never asks for slower than this
+  end_speed_mm_s: 10.0      # arrive gently at the goal
+  hole_margin_mm: 4.0       # extra capture clearance around each hole
   ball_radius_mm: 6.0
-  # Achievable deceleration from board tilt; measure/tune on the rig. Too
-  # high = brakes too late; too low = crawls far from every hole.
+  # Achievable deceleration from board tilt; used for the profile's braking
+  # and acceleration passes and the emergency stopping-distance check.
   hole_brake_accel_mm_s2: 118
-  # If the current path point is already inside an inflated hole capture zone,
-  # do not keep reporting that same zone as "0 mm ahead" forever. The ball
-  # needs to keep moving through planned narrow passes instead of braking into
-  # a permanent crawl.
-  hole_ignore_current_hazard: true
   # Reactive: full brake opposite the velocity (bypassing the slew limiter)
   # when the trajectory enters a hole and stopping distance exceeds the
   # distance to it.

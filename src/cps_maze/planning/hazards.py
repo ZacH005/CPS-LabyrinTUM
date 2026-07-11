@@ -65,6 +65,16 @@ class HoleMap:
         d = np.hypot(self.holes[:, 0] - p[0], self.holes[:, 1] - p[1])
         return bool(np.any(d < self.capture_mm))
 
+    def clearance_mm(self, p: np.ndarray) -> float:
+        """Distance from a point to the nearest capture-zone EDGE.
+
+        Negative when the point is inside a capture zone; +inf with no
+        holes. Used to build the route speed profile."""
+        if not len(self.holes):
+            return float("inf")
+        d = np.hypot(self.holes[:, 0] - p[0], self.holes[:, 1] - p[1])
+        return float(np.min(d - self.capture_mm))
+
     def speed_cap_mm_s(
         self,
         hazard_distance_mm: float | None,

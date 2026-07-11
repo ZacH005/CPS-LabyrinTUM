@@ -40,6 +40,7 @@ from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
 from cps_maze.planning.hazards import HoleMap, should_emergency_brake
 from cps_maze.planning.path import WaypointPath
+from cps_maze.planning.speed_profile import build_speed_profile
 from cps_maze.planning.walls import WallMap
 from cps_maze.vision.ball_pipeline import make_tracker
 from cps_maze.vision.state_estimator import LowPassVelocityEstimator
@@ -218,12 +219,8 @@ def main() -> None:
         ball_radius_mm=float(config.control.get("ball_radius_mm", 6.0)),
         margin_mm=float(config.control.get("hole_margin_mm", 4.0)),
     )
-    hole_horizon_mm = float(config.control.get("hole_horizon_mm", 80.0))
-    hole_standoff_mm = float(config.control.get("hole_standoff_mm", 10.0))
     hole_brake_accel = float(config.control.get("hole_brake_accel_mm_s2", 250.0))
     hole_emergency = bool(config.control.get("hole_emergency_brake", True))
-    hole_ignore_current_hazard = bool(config.control.get(
-        "hole_ignore_current_hazard", True))
     hole_emergency_offroute_mm = float(config.control.get(
         "hole_emergency_offroute_mm", 12.0))
     hole_emergency_align_deg = float(config.control.get(
@@ -237,6 +234,36 @@ def main() -> None:
     brake_max_command = float(config.control.get("brake_max_command", 1.0))
     brake_max_command = max(brake_max_command, max_command)
     brake_slew_per_s = float(config.control.get("brake_slew_per_s", 10.0))
+
+    # One coherent speed PLAN for the whole route, computed once: hole
+    # passes get a committed moderate speed (not a crawl), every slowdown
+    # is reachable by braking (backward pass) and exits ramp smoothly
+    # (forward pass). Replaces the per-frame reactive hole cap, whose
+    # interaction with the stall kick caused the ball to "spazz" at
+    # overlapping capture zones.
+    profile = build_speed_profile(
+        path, hole_map, wall_map,
+        v_max_mm_s=v_max,
+        hole_pass_mm_s=float(config.control.get("hole_pass_mm_s", 16.0)),
+        hole_slow_band_mm=float(config.control.get("hole_slow_band_mm", 20.0)),
+        floor_mm_s=float(config.control.get("profile_floor_mm_s", 12.0)),
+        corner_slow_deg=float(config.control.get("corner_slow_deg", 110.0)),
+        corner_span_mm=corner_span_mm,
+        corner_noise_deg=corner_noise_deg,
+        corner_min_frac=float(config.control.get("min_speed_frac", 0.25)),
+        accel_mm_s2=hole_brake_accel,
+        end_speed_mm_s=float(config.control.get("end_speed_mm_s", 10.0)),
+    )
+    print(profile.summary())
+    # Planned slow rolling must NEVER be mistaken for a stall, or the kick
+    # launches the ball right where the plan wants it careful.
+    safe_stall_speed = 0.5 * profile.min_speed()
+    if stall_speed_mm_s > safe_stall_speed:
+        print(f"stall_speed_mm_s {stall_speed_mm_s:.1f} clamped to "
+              f"{safe_stall_speed:.1f} (must stay below the profile minimum "
+              f"{profile.min_speed():.1f} mm/s)")
+        stall_speed_mm_s = safe_stall_speed
+
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
@@ -286,7 +313,7 @@ def main() -> None:
         "target_x_mm", "target_y_mm", "progress_mm",
         "carrot_x_mm", "carrot_y_mm", "desired_vx_mm_s", "desired_vy_mm_s",
         "cross_track_mm", "turn_deg", "wall_speed_scale", "hole_brake",
-        "wall_distance_mm", "hole_hazard_distance_mm", "hole_speed_cap_mm_s",
+        "wall_distance_mm", "target_speed_mm_s",
         "wall_escape_x", "wall_escape_y",
         "board_cmd_x", "board_cmd_y", "yaw_command", "pitch_command",
     ]
@@ -415,27 +442,25 @@ def main() -> None:
                             if prev_timestamp_s is not None else 0.0)
                     prev_timestamp_s = frame.timestamp_s
 
-                    # hole-aware speed cap: braking starts early enough by
-                    # construction (v_allowed = sqrt(2 a d) toward the pass).
-                    # The horizon grows with speed so a fast ball looks at
-                    # least 1.3 stopping distances ahead.
+                    # The route speed PLAN, computed once at startup: hole
+                    # passes, walls, corners and braking feasibility are all
+                    # already folded into one smooth profile. The controller
+                    # just tracks the planned speed at this progress.
                     hole_brake = ""
                     speed_now = float(np.linalg.norm(state.velocity_mm_s))
-                    stop_d = speed_now * speed_now / (2.0 * hole_brake_accel)
-                    horizon = max(hole_horizon_mm,
-                                  1.3 * stop_d + hole_standoff_mm + 20.0)
-                    hazard_d = hole_map.path_hazard_distance_mm(
-                        path, progress, horizon_mm=horizon,
-                        ignore_current_hazard=hole_ignore_current_hazard)
-                    speed_cap = hole_map.speed_cap_mm_s(
-                        hazard_d, hole_brake_accel, standoff_mm=hole_standoff_mm)
-                    hole_scale = 1.0
-                    if speed_cap is not None:
-                        hole_scale = min(1.0, speed_cap / max(v_max, 1e-6))
-                        if hole_scale < 0.999:
-                            hole_brake = "slow"
+                    target_speed = profile.speed_at(progress)
+                    profile_scale = min(1.0, target_speed / max(v_max, 1e-6))
+                    if profile_scale < 0.8:
+                        hole_brake = "slow"
                     wall_distance = (wall_map.wall_distance_mm(board_xy)
                                      if wall_map is not None else float("inf"))
+
+                    # Runtime wall scale stays as OFF-route protection (the
+                    # profile only knows centerline clearances); on-route the
+                    # two agree, so min() introduces no discontinuity.
+                    wall_scale = (wall_map.speed_scale(board_xy)
+                                  if wall_map is not None else 1.0)
+                    speed_scale = min(wall_scale, profile_scale)
 
                     if mode == "velocity":
                         path_point = path.point_at_progress_mm(progress)
@@ -443,12 +468,10 @@ def main() -> None:
                         turn_deg = path.heading_change_deg(
                             progress, span_mm=corner_span_mm,
                             noise_deg=corner_noise_deg)
-                        wall_scale = (wall_map.speed_scale(board_xy)
-                                      if wall_map is not None else 1.0)
                         board_cmd, v_des = velocity_follower.command(
                             state.position_mm, state.velocity_mm_s,
-                            path_point, tangent, turn_deg, dt_s,
-                            extra_speed_scale=min(wall_scale, hole_scale),
+                            path_point, tangent, 0.0, dt_s,
+                            extra_speed_scale=speed_scale,
                         )
                         # overlay: aim marker a half-second of travel ahead
                         target = state.position_mm + 0.5 * v_des
@@ -458,8 +481,6 @@ def main() -> None:
                         turn_deg = path.heading_change_deg(
                             progress, span_mm=corner_span_mm,
                             noise_deg=corner_noise_deg)
-                        wall_scale = (wall_map.speed_scale(board_xy)
-                                      if wall_map is not None else 1.0)
                         target, _carrot_lookahead = choose_carrot_point(
                             path, state.position_mm, progress,
                             carrot_lookahead_mm, carrot_min_lookahead_mm,
@@ -467,16 +488,21 @@ def main() -> None:
                         )
                         board_cmd, v_des = carrot_follower.command(
                             state.position_mm, state.velocity_mm_s,
-                            target, turn_deg, dt_s,
-                            extra_speed_scale=min(wall_scale, hole_scale),
+                            target, 0.0, dt_s,
+                            extra_speed_scale=speed_scale,
                         )
                         carrot_x = target[0]
                         carrot_y = target[1]
                     else:
-                        turn_deg = 0.0
-                        wall_scale = 1.0
+                        turn_deg = path.heading_change_deg(
+                            progress, span_mm=corner_span_mm,
+                            noise_deg=corner_noise_deg)
                         v_des = np.zeros(2)
-                        target = path.point_at_progress_mm(progress + lookahead_mm)
+                        # position mode: speed emerges from the pull toward
+                        # the lookahead target, so the plan's slowdown is a
+                        # nearer target
+                        lookahead_eff = max(6.0, lookahead_mm * speed_scale)
+                        target = path.point_at_progress_mm(progress + lookahead_eff)
                         carrot_x = ""
                         carrot_y = ""
                         board_cmd = follower.command(state.position_mm,
@@ -551,8 +577,7 @@ def main() -> None:
                         "wall_speed_scale": wall_scale,
                         "hole_brake": hole_brake,
                         "wall_distance_mm": wall_distance,
-                        "hole_hazard_distance_mm": "" if hazard_d is None else hazard_d,
-                        "hole_speed_cap_mm_s": "" if speed_cap is None else speed_cap,
+                        "target_speed_mm_s": target_speed,
                         "wall_escape_x": wall_escape[0], "wall_escape_y": wall_escape[1],
                         "board_cmd_x": board_cmd[0], "board_cmd_y": board_cmd[1],
                         "yaw_command": servo_cmd[0], "pitch_command": servo_cmd[1],
