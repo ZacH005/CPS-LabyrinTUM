@@ -65,6 +65,33 @@ RUN_LOG_FIELDS = [
 ]
 
 
+def slew_limit_command(
+    target: np.ndarray,
+    prev: np.ndarray,
+    dt_s: float,
+    braking: bool,
+    slow_per_s: float,
+    fast_per_s: float,
+) -> np.ndarray:
+    """Per-axis slew limiting with an asymmetric rule: REDUCING a command's
+    magnitude is always safe and always uses the fast rate; only increasing
+    drive is limited gently.
+
+    Without this, a large stall-kick command unwinds at the slow driving
+    rate even while the ball is already overspeeding in the same direction
+    (dot(cmd, v) > 0, so the "braking" fast lane never engages) - observed
+    as the ball being pushed at +0.65 while at 4x the planned speed,
+    straight into a hole.
+    """
+    out = target.copy()
+    for i in range(len(out)):
+        reducing = abs(target[i]) < abs(prev[i])
+        rate = fast_per_s if (braking or reducing) else slow_per_s
+        step = rate * dt_s
+        out[i] = prev[i] + float(np.clip(target[i] - prev[i], -step, step))
+    return out
+
+
 def load_holes(path: Path) -> np.ndarray:
     """Returns (N, 3) array of x_mm, y_mm, radius_mm; empty if file missing."""
     if not path.exists():
@@ -295,6 +322,8 @@ def main() -> None:
     brake_max_command = float(config.control.get("brake_max_command", 1.0))
     brake_max_command = max(brake_max_command, max_command)
     brake_slew_per_s = float(config.control.get("brake_slew_per_s", 10.0))
+    brake_cmd_per_mm_s = float(config.control.get("brake_cmd_per_mm_s", 0.012))
+    brake_cmd_floor = float(config.control.get("brake_cmd_floor", 0.06))
 
     # One coherent speed PLAN for the whole route, computed once: hole
     # passes get a committed moderate speed (not a crawl), every slowdown
@@ -349,6 +378,8 @@ def main() -> None:
         stall_min_duration_s=stall_min_duration_s,
         stall_kick_ramp_per_s=stall_kick_ramp_per_s,
         brake_max_command=brake_max_command,
+        brake_cmd_per_mm_s=brake_cmd_per_mm_s,
+        brake_cmd_floor=brake_cmd_floor,
     ))
     carrot_follower = CarrotVelocityPathFollower(CarrotVelocityFollowerConfig(
         v_max_mm_s=v_max,
@@ -363,6 +394,8 @@ def main() -> None:
         stall_min_duration_s=stall_min_duration_s,
         stall_kick_ramp_per_s=stall_kick_ramp_per_s,
         brake_max_command=brake_max_command,
+        brake_cmd_per_mm_s=brake_cmd_per_mm_s,
+        brake_cmd_floor=brake_cmd_floor,
     ))
     print(f"controller: {mode}" + (
         f" (v_max {v_max:.0f} mm/s)" if mode in ("carrot", "velocity") else ""))
@@ -660,11 +693,10 @@ def main() -> None:
                         and float(np.dot(board_cmd, state.velocity_mm_s)) < 0.0)
                     cap = brake_max_command if braking else max_command
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -cap, cap)
-                    slew = brake_slew_per_s if braking else command_slew_per_s
-                    if slew > 0.0 and dt_s > 0.0 and not emergency:
-                        max_step = slew * dt_s
-                        servo_cmd = prev_servo_cmd + np.clip(
-                            servo_cmd - prev_servo_cmd, -max_step, max_step)
+                    if command_slew_per_s > 0.0 and dt_s > 0.0 and not emergency:
+                        servo_cmd = slew_limit_command(
+                            servo_cmd, prev_servo_cmd, dt_s, braking,
+                            command_slew_per_s, brake_slew_per_s)
                     prev_servo_cmd = servo_cmd.copy()
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
                     if hole_brake == "emergency":

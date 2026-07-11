@@ -35,7 +35,7 @@ vision:
   tracker: "pipeline"
   # Specular gate for the pipeline tracker. Measured on this rig with
   # debug_tracking: ball glints 243 when still, everything else <= ~210.
-  min_specular: 237
+  min_specular: 240
   # Motion blur smears the glint exactly when the ball moves fast (observed
   # dips to ~194 while tracked). Motion-cue candidates are already strong
   # evidence (moving, round, ball-sized), so they get a lower gate.
@@ -144,6 +144,13 @@ control:
   # 200 mm/s). The firmware pulse clamp still bounds everything.
   brake_max_command: 0.9
   brake_slew_per_s: 12
+  # ABS: tilt is FORCE, so a brake tilt still applied when the ball stops
+  # launches it backward (observed: braked to a stop at hole 2, then
+  # launched backward to 65 mm/s and oscillated into the hole). The brake
+  # ceiling shrinks with speed - floor + per_mm_s * speed - so the board is
+  # ~flat by the time the ball stops.
+  brake_cmd_per_mm_s: 0.012
+  brake_cmd_floor: 0.06
   # --- Route speed profile (replaces the per-frame reactive hole cap) ---
   # Computed ONCE at startup over the whole route: hole passes, wall
   # clearance, corners, and goal approach become speed limits by place, then
