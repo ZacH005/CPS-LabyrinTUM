@@ -247,8 +247,11 @@ def main():
     ap.add_argument("--calibrate", metavar="SOURCE_VIDEO",
                      help="offline step: scan a full recorded video for static confusers "
                           "(holes/pegs that glint like the ball) and save them -- run this "
-                          "once against footage you already have in full. Not usable on a "
-                          "live stream, which by definition has no 'whole video' to scan.")
+                          "once against footage you already have in full. Record the video "
+                          "with NO ball on the board: a ball lingering anywhere for >10%% "
+                          "of the recording blacklists its own resting spots and the live "
+                          "tracker then loses it there. Not usable on a live stream, which "
+                          "by definition has no 'whole video' to scan.")
     ap.add_argument("--confuser-thresh", type=int, default=225,
                     help="brightness threshold used by --calibrate")
     ap.add_argument("--confuser-freq-thresh", type=float, default=0.10,
@@ -301,6 +304,12 @@ def main():
         save_calibration(confusers, roi, args.confusers_file, metadata=metadata)
         print(f"found {len(confusers)} confuser(s)" + (f", roi with {len(roi)} points" if roi else ", no roi given")
               + f", saved to {args.confusers_file}")
+        if len(confusers) > 30:
+            print("WARNING: that is far more confusers than a board has "
+                  "static bright features (~5-15). The BALL was almost "
+                  "certainly in this video and has blacklisted its own "
+                  "resting spots - the live tracker will then lose it there. "
+                  "Re-record with NO ball on the board and calibrate again.")
         return
 
     if not args.video:

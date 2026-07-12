@@ -42,7 +42,12 @@ class StallKicker:
             self.low_speed_time_s = 0.0  # clearly rolling: real release
         elif speed_mm_s < self.speed_mm_s:
             self.low_speed_time_s += max(dt_s, 0.0)
-        # else: inside the noise band - hold the timer (hysteresis)
+        else:
+            # noise band: accumulate at half rate instead of holding. A
+            # parked ball whose velocity-estimate noise floor sits INSIDE
+            # the band would otherwise never build stall time and never get
+            # kicked (observed: 22 s stalls at 0.1 commands).
+            self.low_speed_time_s += 0.5 * max(dt_s, 0.0)
 
         if self.kick <= 0.0 or self.low_speed_time_s < self.min_duration_s:
             return 0.0
@@ -101,6 +106,9 @@ class VelocityFollowerConfig:
     # max_command). max_command is a gentleness cap for DRIVING; stopping a
     # fast ball needs the full tilt authority (firmware still clamps).
     brake_max_command: float = 0.0
+    # Speed-proportional brake ceiling (ABS); see CarrotVelocityFollowerConfig.
+    brake_cmd_per_mm_s: float = 0.0
+    brake_cmd_floor: float = 0.06
 
 
 class VelocityPathFollower:
@@ -161,9 +169,14 @@ class VelocityPathFollower:
         # asymmetric authority: a command opposing the current motion is a
         # brake and may use the full tilt range; driving stays gentle
         cap = cfg.max_command
-        if (cfg.brake_max_command > cfg.max_command and speed > 20.0
-                and float(np.dot(raw, velocity_mm_s)) < 0.0):
+        is_braking = float(np.dot(raw, velocity_mm_s)) < 0.0
+        if cfg.brake_max_command > cfg.max_command and speed > 20.0 and is_braking:
             cap = cfg.brake_max_command
+        if cfg.brake_cmd_per_mm_s > 0.0 and is_braking:
+            limit = cfg.brake_cmd_floor + cfg.brake_cmd_per_mm_s * speed
+            magnitude = float(np.linalg.norm(raw))
+            if magnitude > limit:
+                raw = raw * (limit / magnitude)
         return np.clip(raw, -cap, cap), v_desired
 
 
@@ -187,6 +200,13 @@ class CarrotVelocityFollowerConfig:
     # max_command). max_command is a gentleness cap for DRIVING; stopping a
     # fast ball needs the full tilt authority (firmware still clamps).
     brake_max_command: float = 0.0
+    # Speed-proportional brake ceiling (like ABS): tilt is FORCE, so any
+    # brake tilt still applied when the ball reaches zero speed launches it
+    # backward - observed as a violent forward/backward oscillation around
+    # every hard stop. Cap |brake| <= floor + per_mm_s * speed so the brake
+    # melts away as the ball slows. 0 disables.
+    brake_cmd_per_mm_s: float = 0.0
+    brake_cmd_floor: float = 0.06
 
 
 class CarrotVelocityPathFollower:
@@ -244,9 +264,16 @@ class CarrotVelocityPathFollower:
         # asymmetric authority: a command opposing the current motion is a
         # brake and may use the full tilt range; driving stays gentle
         cap = cfg.max_command
-        if (cfg.brake_max_command > cfg.max_command and speed > 20.0
-                and float(np.dot(raw, velocity_mm_s)) < 0.0):
+        is_braking = float(np.dot(raw, velocity_mm_s)) < 0.0
+        if cfg.brake_max_command > cfg.max_command and speed > 20.0 and is_braking:
             cap = cfg.brake_max_command
+        if cfg.brake_cmd_per_mm_s > 0.0 and is_braking:
+            # ABS: the brake ceiling shrinks with speed, reaching ~flat at
+            # the stop so the residual tilt cannot launch the ball backward
+            limit = cfg.brake_cmd_floor + cfg.brake_cmd_per_mm_s * speed
+            magnitude = float(np.linalg.norm(raw))
+            if magnitude > limit:
+                raw = raw * (limit / magnitude)
         return np.clip(raw, -cap, cap), v_desired
 
 

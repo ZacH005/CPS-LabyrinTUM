@@ -320,3 +320,73 @@ def test_carrot_follower_brake_may_exceed_max_command():
         heading_change_deg=0.0,
     )
     assert abs(command[0]) <= 0.45 + 1e-9
+
+
+def test_carrot_brake_ceiling_shrinks_with_speed():
+    # ABS: tilt is force - a brake tilt still applied when the ball stops
+    # launches it backward. The brake ceiling must melt away with speed.
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=25.0, k_vel=0.012, max_command=0.9,
+        brake_max_command=0.9, brake_cmd_per_mm_s=0.012,
+        brake_cmd_floor=0.06, stall_kick=0.0,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+    carrot = np.array([100.0, 0.0])
+
+    # fast ball overspeeding toward the carrot: strong brake allowed
+    cmd_fast, _ = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([70.0, 0.0]),
+        carrot_mm=carrot, heading_change_deg=0.0,
+    )
+    # slow ball, same overspeed sign: brake must be nearly gone
+    cmd_slow, _ = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([30.0, 0.0]),
+        carrot_mm=carrot, heading_change_deg=0.0,
+    )
+    assert cmd_fast[0] < 0 and cmd_slow[0] < 0
+    fast_limit = 0.06 + 0.012 * 70.0
+    slow_limit = 0.06 + 0.012 * 30.0
+    assert abs(cmd_fast[0]) <= fast_limit + 1e-9
+    assert abs(cmd_slow[0]) <= slow_limit + 1e-9
+    assert abs(cmd_slow[0]) < abs(cmd_fast[0])
+
+    # the launch scenario: ball creeping BACKWARD after a hard stop. The
+    # counter-command must be gentle (ABS ceiling at low speed), not a slam
+    # that starts the oscillation in the other direction.
+    cmd_reverse, _ = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([-8.0, 0.0]),
+        carrot_mm=carrot, heading_change_deg=0.0,
+    )
+    assert cmd_reverse[0] > 0  # opposing the reverse creep
+    assert abs(cmd_reverse[0]) <= 0.06 + 0.012 * 8.0 + 1e-9
+
+
+def test_carrot_driving_commands_not_limited_by_abs():
+    cfg = CarrotVelocityFollowerConfig(
+        v_max_mm_s=25.0, k_vel=0.05, max_command=0.9,
+        brake_cmd_per_mm_s=0.012, brake_cmd_floor=0.06, stall_kick=0.0,
+    )
+    follower = CarrotVelocityPathFollower(cfg)
+
+    # slow ball being accelerated toward the carrot: full driving authority
+    cmd, _ = follower.command(
+        position_mm=np.array([0.0, 0.0]),
+        velocity_mm_s=np.array([2.0, 0.0]),
+        carrot_mm=np.array([100.0, 0.0]), heading_change_deg=0.0,
+    )
+    assert cmd[0] > 0.5  # not squashed to the ABS ceiling
+
+
+def test_stall_kicker_accumulates_inside_noise_band():
+    # A parked ball whose velocity-estimate noise floor sits INSIDE the
+    # hysteresis band must still build stall time (observed: 22s stalls at
+    # 0.1 commands because the band held the timer at zero forever).
+    kicker = StallKicker(kick=0.3, speed_mm_s=5.0, min_duration_s=0.3)
+
+    kick = 0.0
+    for _ in range(50):  # 1.0s entirely inside the band (5..10 mm/s)
+        kick = kicker.update(7.0, 0.02)
+    assert kick > 0.0, "band-resident noise must not suppress the kick forever"

@@ -36,6 +36,7 @@ from cps_maze.control.pid import (
     VelocityFollowerConfig,
     VelocityPathFollower,
 )
+from cps_maze.control.trim import NeutralTrim
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
 from cps_maze.planning.hazards import HoleMap, should_emergency_brake
@@ -62,6 +63,33 @@ RUN_LOG_FIELDS = [
     "wall_escape_x", "wall_escape_y",
     "board_cmd_x", "board_cmd_y", "yaw_command", "pitch_command",
 ]
+
+
+def slew_limit_command(
+    target: np.ndarray,
+    prev: np.ndarray,
+    dt_s: float,
+    braking: bool,
+    slow_per_s: float,
+    fast_per_s: float,
+) -> np.ndarray:
+    """Per-axis slew limiting with an asymmetric rule: REDUCING a command's
+    magnitude is always safe and always uses the fast rate; only increasing
+    drive is limited gently.
+
+    Without this, a large stall-kick command unwinds at the slow driving
+    rate even while the ball is already overspeeding in the same direction
+    (dot(cmd, v) > 0, so the "braking" fast lane never engages) - observed
+    as the ball being pushed at +0.65 while at 4x the planned speed,
+    straight into a hole.
+    """
+    out = target.copy()
+    for i in range(len(out)):
+        reducing = abs(target[i]) < abs(prev[i])
+        rate = fast_per_s if (braking or reducing) else slow_per_s
+        step = rate * dt_s
+        out[i] = prev[i] + float(np.clip(target[i] - prev[i], -step, step))
+    return out
 
 
 def load_holes(path: Path) -> np.ndarray:
@@ -191,6 +219,24 @@ def main() -> None:
         wall_map = WallMap.load(wall_mask_file)
         print(f"wall mask loaded from {wall_mask_file} "
               "(cross-wall rejection + wall slowdown active)")
+        # Consistency self-check: the route centerline must lie in free
+        # space. A stale mask (recalibrated homography, old mask) draws
+        # phantom walls that block the association's line-of-sight checks -
+        # observed as huge cross-track errors and the ball stuck at the
+        # very start of the route.
+        total_mm = float(path.cumulative_lengths[-1])
+        probe = np.arange(0.0, total_mm, 4.0)
+        on_wall = sum(
+            1 for s in probe if wall_map.is_wall(path.point_at_progress_mm(s)))
+        frac = on_wall / max(len(probe), 1)
+        if frac > 0.02:
+            print(f"WARNING: {100 * frac:.0f}% of the route reads as INSIDE "
+                  "a wall - the wall mask is stale for the current "
+                  "homography/path. Rebuild it now: python "
+                  "scripts/build_wall_mask.py  (running without it is "
+                  "better than running with a wrong one)")
+            wall_map = None
+            print("wall mask DISABLED for this run.")
     else:
         print("note: no wall mask - run scripts/build_wall_mask.py to enable "
               "cross-wall association rejection and wall-proximity slowdown")
@@ -276,6 +322,29 @@ def main() -> None:
     brake_max_command = float(config.control.get("brake_max_command", 1.0))
     brake_max_command = max(brake_max_command, max_command)
     brake_slew_per_s = float(config.control.get("brake_slew_per_s", 10.0))
+    brake_cmd_per_mm_s = float(config.control.get("brake_cmd_per_mm_s", 0.012))
+    brake_cmd_floor = float(config.control.get("brake_cmd_floor", 0.06))
+    plan_latency_s = float(config.control.get("plan_latency_s", 0.35))
+    slowzone_max_command = float(config.control.get("slowzone_max_command", 0.55))
+    # Composure: when control gets violent (emergency, or speed far above
+    # plan), stop pursuing progress - hold position, damp the ball, then
+    # resume the moment control is regained. Prevents the freak-out cascade:
+    # rough brake -> too fast -> unstable -> pushed forward anyway -> hole.
+    # Trigger only on a GENUINE runaway: fire when speed exceeds BOTH a large
+    # multiple of the planned speed AND an absolute floor, so ordinary
+    # overshoot during following never trips it (that over-triggered before).
+    stabilize_enabled = bool(config.control.get("stabilize_enabled", True))
+    stabilize_margin = float(config.control.get("stabilize_overspeed_margin_mm_s", 40.0))
+    stabilize_trigger_mult = float(config.control.get("stabilize_trigger_mult", 3.0))
+    stabilize_trigger_floor = float(config.control.get("stabilize_trigger_speed_mm_s", 55.0))
+    # Exit as soon as the ball is back under control (speed below this) for a
+    # brief settle - NOT a dead stop, which held the ball frozen for the full
+    # timeout every time and blocked all progress.
+    stabilize_exit_speed = float(config.control.get("stabilize_exit_speed_mm_s", 18.0))
+    stabilize_settle_s = float(config.control.get("stabilize_settle_s", 0.2))
+    stabilize_max_s = float(config.control.get("stabilize_max_s", 2.0))
+    stabilize_kp = float(config.control.get("stabilize_kp", 0.010))
+    stabilize_kd = float(config.control.get("stabilize_kd", 0.012))
 
     # One coherent speed PLAN for the whole route, computed once: hole
     # passes get a committed moderate speed (not a crawl), every slowdown
@@ -330,6 +399,8 @@ def main() -> None:
         stall_min_duration_s=stall_min_duration_s,
         stall_kick_ramp_per_s=stall_kick_ramp_per_s,
         brake_max_command=brake_max_command,
+        brake_cmd_per_mm_s=brake_cmd_per_mm_s,
+        brake_cmd_floor=brake_cmd_floor,
     ))
     carrot_follower = CarrotVelocityPathFollower(CarrotVelocityFollowerConfig(
         v_max_mm_s=v_max,
@@ -344,11 +415,21 @@ def main() -> None:
         stall_min_duration_s=stall_min_duration_s,
         stall_kick_ramp_per_s=stall_kick_ramp_per_s,
         brake_max_command=brake_max_command,
+        brake_cmd_per_mm_s=brake_cmd_per_mm_s,
+        brake_cmd_floor=brake_cmd_floor,
     ))
     print(f"controller: {mode}" + (
         f" (v_max {v_max:.0f} mm/s)" if mode in ("carrot", "velocity") else ""))
-    estimator = LowPassVelocityEstimator()
+    estimator = LowPassVelocityEstimator(
+        min_dt_s=float(config.control.get("velocity_min_dt_s", 0.006)),
+        max_speed_mm_s=float(config.control.get("velocity_max_speed_mm_s", 250.0)),
+    )
     total_length = float(path.cumulative_lengths[-1])
+
+    trim = NeutralTrim.load_if_exists()
+    if trim.yaw or trim.pitch:
+        print(f"neutral trim loaded: yaw={trim.yaw:+.3f} pitch={trim.pitch:+.3f} "
+              "(command 0,0 = level board)")
 
     if args.dry_run:
         serial_ctx: contextlib.AbstractContextManager = contextlib.nullcontext()
@@ -358,6 +439,7 @@ def main() -> None:
             port=args.port or config.serial["port"],
             baudrate=int(config.serial["baudrate"]),
             timeout_s=float(config.serial["timeout_s"]),
+            trim_yaw=trim.yaw, trim_pitch=trim.pitch,
         )
 
     start_time = monotonic()
@@ -366,6 +448,10 @@ def main() -> None:
     progress_est = None  # last known path progress; keeps association local
     prev_servo_cmd = np.zeros(2)  # for command-slew limiting
     recovery_low_speed_s = 0.0
+    stabilize_active = False
+    stabilize_still = 0.0
+    stabilize_entered = 0.0
+    freeze_point = np.zeros(2)
     outcome = "stopped by user"
 
     mouse_state: dict = {}
@@ -427,6 +513,7 @@ def main() -> None:
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
                     recovery_low_speed_s = 0.0
+                    stabilize_active = False
                     estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
@@ -482,7 +569,10 @@ def main() -> None:
                     # just tracks the planned speed at this progress.
                     hole_brake = ""
                     speed_now = float(np.linalg.norm(state.velocity_mm_s))
-                    target_speed = profile.speed_at(progress)
+                    # read the plan where the ball WILL be (control latency),
+                    # so slow zones are entered at plan speed, not discovered
+                    target_speed = profile.speed_at(
+                        progress + speed_now * plan_latency_s)
                     profile_scale = min(1.0, target_speed / max(v_max, 1e-6))
                     if profile_scale < 0.8:
                         hole_brake = "slow"
@@ -532,8 +622,10 @@ def main() -> None:
                         if recovery_planner is not None:
                             if float(cross) >= recovery_cross_track_mm:
                                 recovery_reason = "offroute"
-                            elif wall_map is not None and wall_map.line_blocked(
-                                    state.position_mm, recovery_goal):
+                            elif (wall_map is not None
+                                  and speed_now < recovery_stall_speed_mm_s
+                                  and wall_map.line_blocked(
+                                      state.position_mm, recovery_goal)):
                                 recovery_reason = "wall"
                             elif (wall_distance <= recovery_wall_distance_mm
                                   and speed_now < recovery_stall_speed_mm_s):
@@ -545,10 +637,18 @@ def main() -> None:
                                 recovery_path = recovery_planner.plan(
                                     state.position_mm, recovery_goal)
                                 if recovery_path is not None and len(recovery_path) >= 2:
-                                    target = progress_limited_point_along_polyline(
+                                    candidate = progress_limited_point_along_polyline(
                                         recovery_path, path, progress,
                                         recovery_follow_mm,
                                         recovery_max_backtrack_mm)
+                                    _, cand_off = path.nearest_progress_and_distance_mm(
+                                        candidate, progress)
+                                    # reject detours that increase distance
+                                    # to the route (observed: carrot sent to
+                                    # mid-board around a hole capture zone,
+                                    # driving the ball into hole 2)
+                                    if cand_off <= max(float(cross), 8.0) + 5.0:
+                                        target = candidate
                         board_cmd, v_des = carrot_follower.command(
                             state.position_mm, state.velocity_mm_s,
                             target, 0.0, dt_s,
@@ -573,8 +673,10 @@ def main() -> None:
                         if recovery_planner is not None:
                             if float(cross) >= recovery_cross_track_mm:
                                 recovery_reason = "offroute"
-                            elif wall_map is not None and wall_map.line_blocked(
-                                    state.position_mm, recovery_goal):
+                            elif (wall_map is not None
+                                  and speed_now < recovery_stall_speed_mm_s
+                                  and wall_map.line_blocked(
+                                      state.position_mm, recovery_goal)):
                                 recovery_reason = "wall"
                             elif (wall_distance <= recovery_wall_distance_mm
                                   and speed_now < recovery_stall_speed_mm_s):
@@ -586,10 +688,18 @@ def main() -> None:
                                 recovery_path = recovery_planner.plan(
                                     state.position_mm, recovery_goal)
                                 if recovery_path is not None and len(recovery_path) >= 2:
-                                    target = progress_limited_point_along_polyline(
+                                    candidate = progress_limited_point_along_polyline(
                                         recovery_path, path, progress,
                                         recovery_follow_mm,
                                         recovery_max_backtrack_mm)
+                                    _, cand_off = path.nearest_progress_and_distance_mm(
+                                        candidate, progress)
+                                    # reject detours that increase distance
+                                    # to the route (observed: carrot sent to
+                                    # mid-board around a hole capture zone,
+                                    # driving the ball into hole 2)
+                                    if cand_off <= max(float(cross), 8.0) + 5.0:
+                                        target = candidate
                         carrot_x = ""
                         carrot_y = ""
                         board_cmd = follower.command(state.position_mm,
@@ -627,6 +737,44 @@ def main() -> None:
                         board_cmd = ((-brake_max_command / speed_now)
                                      * state.velocity_mm_s)
 
+                    # Composure state machine: enter on a genuine runaway,
+                    # hold position and damp, resume the moment control is back.
+                    if stabilize_enabled:
+                        overspeed = speed_now > max(
+                            stabilize_trigger_mult * target_speed,
+                            target_speed + stabilize_margin,
+                            stabilize_trigger_floor)
+                        if (emergency or overspeed) and not stabilize_active:
+                            stabilize_active = True
+                            freeze_point = state.position_mm.copy()
+                            stabilize_entered = monotonic()
+                            stabilize_still = 0.0
+                        if stabilize_active and not emergency:
+                            # "settled" = speed recovered below exit_speed, held
+                            # briefly. Not a dead stop - once the ball is back
+                            # under control there is no reason to keep holding.
+                            if speed_now < stabilize_exit_speed:
+                                stabilize_still += max(dt_s, 0.0)
+                            else:
+                                stabilize_still = 0.0
+                            if (stabilize_still >= stabilize_settle_s
+                                    or monotonic() - stabilize_entered
+                                    > stabilize_max_s):
+                                stabilize_active = False  # calm: resume path
+                                follower.reset()
+                                velocity_follower.reset()
+                                carrot_follower.reset()
+                            else:
+                                # hold position with damping; no progress
+                                hold_err = freeze_point - state.position_mm
+                                board_cmd = (stabilize_kp * hold_err
+                                             - stabilize_kd * state.velocity_mm_s)
+                                m = float(np.linalg.norm(board_cmd))
+                                hold_cap = 0.21 + 0.012 * speed_now
+                                if m > hold_cap:
+                                    board_cmd = board_cmd * (hold_cap / m)
+                                hole_brake = "stabilize"
+
                     # a command opposing the motion is a brake: allow the
                     # full tilt range and a faster slew (stopping a fast
                     # ball cannot wait for the gentle driving ramp)
@@ -634,15 +782,20 @@ def main() -> None:
                         speed_now > 20.0
                         and float(np.dot(board_cmd, state.velocity_mm_s)) < 0.0)
                     cap = brake_max_command if braking else max_command
+                    if profile_scale < 0.75 and not emergency:
+                        # calm hands near holes: follow the path with small,
+                        # steady corrections; never slam inside a hole pass
+                        cap = min(cap, slowzone_max_command)
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -cap, cap)
-                    slew = brake_slew_per_s if braking else command_slew_per_s
-                    if slew > 0.0 and dt_s > 0.0 and not emergency:
-                        max_step = slew * dt_s
-                        servo_cmd = prev_servo_cmd + np.clip(
-                            servo_cmd - prev_servo_cmd, -max_step, max_step)
+                    if command_slew_per_s > 0.0 and dt_s > 0.0 and not emergency:
+                        servo_cmd = slew_limit_command(
+                            servo_cmd, prev_servo_cmd, dt_s, braking,
+                            command_slew_per_s, brake_slew_per_s)
                     prev_servo_cmd = servo_cmd.copy()
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
-                    if hole_brake == "emergency":
+                    if hole_brake == "stabilize":
+                        status += "  STABILIZING"
+                    elif hole_brake == "emergency":
                         status += "  EMERGENCY BRAKE"
                     elif hole_brake == "slow":
                         status += "  hole ahead"
@@ -685,6 +838,7 @@ def main() -> None:
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
                     recovery_low_speed_s = 0.0
+                    stabilize_active = False
                     estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
