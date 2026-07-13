@@ -171,7 +171,11 @@ an early version triggered on ordinary overshoot and on the phantom velocity
 spikes described earlier, so it was active for most of a run and froze the ball
 in place; it was then narrowed to fire only on a real runaway (speed far above
 the plan) and to release as soon as the ball settles rather than after a fixed
-hold.
+hold. Even narrowed, it was ultimately switched off in the final build: once
+speed control became smooth enough that genuine runaways stopped happening (see
+"From a pile of band-aids to speed control" below), a state whose whole job was
+to catch a runaway had nothing left to catch, and holding position on a false
+trigger did more harm than the disturbance it was guarding against.
 
 ### An oblique view of the walls fires false wall contacts
 The overhead camera views the walls at an angle, so a ball near a wall can
@@ -216,6 +220,69 @@ breakaway tilt into deliberate slowdowns and flung the ball into walls and
 holes. Resolution: the kick requires the low-speed condition to persist
 (distinguishing real static friction from intentional braking), and all
 commands pass through a slew-rate limiter before reaching the hardware.
+
+### From a pile of band-aids to speed control
+Even with the persistence gate, the discrete stall kick was only the first of
+several reactive patches, each fixing a symptom of the same disease. The kick
+freed a dead stall but not a ball twitching in place at a tight corner (the
+velocity estimate read the twitch as "moving" and reset the kick), so a
+separate displacement-based "unstick" push was added to detect stuck by actual
+net travel and shove the ball toward the target. The unstick and the kick could
+both over-push near a hole, so both had to be capped and suppressed inside
+capture zones. The composure state (above) was a third patch, catching the
+runaways the first two occasionally caused. The result was a stack of discrete
+mechanisms that each guarded against the others' failure modes and interacted
+in ways that were hard to reason about.
+
+The root cause underneath all of them was that the controller was fighting the
+plant instead of modelling it: board tilt sets the ball's ACCELERATION, and the
+ball is a static-friction plant, so any controller that commands zero tilt at
+zero error lets stiction pin the ball short of the target -- and then needs a
+kick to escape. The redesign reframed the whole loop around controlling speed
+directly: a velocity PI whose integral term IS the stiction compensator. The
+integral winds up smoothly while the ball is slower than planned (including a
+dead stall) until the tilt breaks it free, then unwinds as the speed error
+closes, with an anti-windup bound so a long stall can never wind up into a
+launch. Continuous speed control made the ball trackable everywhere, and the
+three discrete band-aids -- stall kick, unstick, composure -- became
+unnecessary and were disabled. They remain in the codebase, behind config
+flags, in case a future rig with worse stiction needs them again. Lesson: a
+stack of reactive patches that each catch another patch's failure is a sign the
+plant is being fought rather than modelled; fixing the model retired all of
+them at once.
+
+### The last few holes needed the wall, not more control
+With smooth speed control the ball completed almost the whole maze, but a
+handful of holes sat so close to the traced route that ordinary wobble still
+occasionally dropped the ball in -- notably one hole at the foot of a downhill
+straight (the ball arrived fast and got flung sideways into it) and two holes
+right at the finish (where the ball arrives hottest). Tightening gains or
+adding more braking did not help, because the route itself passed within a
+ball's wobble of the hole. The fix was geometric rather than control-theoretic:
+a wall-hug detour that shifts the lookahead point a few millimetres
+perpendicular to the path through those spots, so the ball rides along the
+outer wall around the hole and rejoins the route afterward, plus a gentle
+one-sided "wall-lean" push at the very last hole that leans the ball into the
+wall (and fades out once it is already leaning, so it never oscillates back
+toward the hole). Combined with the finish-approach crawl, this closed the last
+few percent of reliability. Lesson: when the route grazes a hazard, moving the
+target away from the hazard beats asking the controller to track a bad target
+more precisely.
+
+### Reactive last-resort brakes, retired for the same reason
+A last-resort emergency brake -- discard path following and slam a full brake
+opposite the velocity when the ball's trajectory is about to carry it into a
+hole -- was built as a final safety net. Like the composure state, it earned
+its retirement: tilt is force, so a hard brake still applied as the ball
+reaches zero speed launches it backward, and on a near-miss the violent
+reaction repeatedly did more damage than the near-miss would have. Once speed
+planning and the wall-hug detours kept the ball from arriving at a hole out of
+control in the first place, the emergency brake was disabled in the final build
+(it too remains behind a config flag). The final safety posture is prevention
+by smooth planning, not violent last-second reaction. Lesson: a reactive safety
+net that acts through the same nonlinear actuator it is trying to tame can be
+more dangerous than the event it guards against; prevent the condition upstream
+instead.
 
 ### Safety caps can silently disable safety fixes
 A run with the command cap set below the stiction kick clipped the kick away

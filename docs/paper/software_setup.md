@@ -1,9 +1,10 @@
 # Software Stack: What Is Set Up and Fixed
 
-Reference for the paper. Everything below is implemented, validated on the
-real rig, and will not change. Tuning values (controller gains, speeds,
-brightness thresholds) are intentionally NOT listed here because they are
-still being adjusted.
+Reference for the paper. Everything below is implemented and validated on the
+real rig, and describes the final build that completes the maze end-to-end.
+This document is structural: the specific tuning values (controller gains,
+speeds, brightness thresholds) live in `configs/default.yaml` and in the
+paper's control section, and are not duplicated here.
 
 Repository: https://github.com/ZacH005/CPS-ML-Maze
 
@@ -23,9 +24,14 @@ fixed overhead camera (OV9281, global shutter, 1280x800)
   -> serial link -> Arduino UNO R4 -> PCA9685 -> 2 servos -> board tilt
 ```
 
-The control loop runs on the host PC in Python. One iteration per camera
-frame: detect the ball, convert to board coordinates, find where it is along
-the annotated route, compute a tilt command, send it to the Arduino.
+The control loop runs on the host PC in Python. Each iteration reads the most
+recently captured frame from a single-frame buffer (so the loop always acts on
+the newest image, never a stale queued one), detects the ball, converts to
+board coordinates, finds where it is along the annotated route, computes a tilt
+command, and sends it to the Arduino. The loop runs as fast as detection,
+overlay drawing, and logging allow -- below the camera's 120 fps capture rate --
+so it consumes a subset of captured frames rather than one fixed frame in every
+N.
 
 ## 2. Coordinate system and calibration
 
@@ -101,36 +107,88 @@ all live tools):
   sight from the ball crosses a wall are rejected outright.
 - Path curvature ahead of the ball is measured as accumulated absolute
   turning (not endpoint tangent difference, which cancels in chicanes) and
-  is used to slow the ball before corners. Planned wall clearance along the
-  route is folded into a precomputed speed profile; a separate runtime
-  slowdown from the wall distance transform applies only when the ball has
-  drifted off the centerline, so the two do not double-count on the route.
+  is used to slow the ball before corners.
+- A single speed profile for the whole route is precomputed once at startup.
+  It folds corner curvature, committed hole-pass speeds, planned wall
+  clearance, per-hole "danger" crawls, and a finish-approach crawl into one
+  speed-by-position plan; a backward pass then guarantees every slowdown is
+  reachable by braking and a forward pass smooths acceleration. The controller
+  looks the plan up slightly ahead of the ball, so slowdowns are anticipated
+  rather than discovered late. A separate runtime slowdown from the wall
+  distance transform applies only when the ball has drifted off the centerline,
+  so the two do not double-count on the route.
+- Startup danger check: at load, the route is scanned for holes it passes
+  close to at a sharp turn, or nearly grazes on a straight; those spots are
+  crawled through under tight control. The finish approach (which threads
+  several holes just before the goal) is crawled as one block for the same
+  reason.
+- Wall-hug detours: for the few holes the traced route grazes, the lookahead
+  point the controller chases is shifted a few millimetres perpendicular to
+  the path, so the ball rides along the outer wall around the hole and rejoins
+  the route after it instead of oscillating into the capture zone. This is a
+  planning-time offset on the pursued point, not a change to the stored route.
+- An A* replanner that reroutes the ball around obstacles when it drifts far
+  off route exists in the codebase but is disabled by default: the overhead
+  camera's oblique view of the walls produces false wall contacts that made it
+  fire spuriously, and ordinary following plus the off-route wall slowdown
+  cover recovery without it (see the struggles document).
 
 ## 6. Control and safety (structure)
 
-- The controller works in the board frame; a measured 2x2 axis map
-  (`calibration/axis_map.npz`, produced by `scripts/axis_check.py`, which
-  pulses each servo axis and measures the ball's response with the camera)
-  converts board-frame commands to servo yaw/pitch. This absorbs any
-  channel swaps or sign flips in the physical build.
-- Static friction is compensated explicitly: below a measurable tilt the
-  ball does not move at all, so a sustained commanded-but-not-moving state
-  triggers a breakaway command floor.
-- Composure: on a genuine runaway (speed far above the plan, or after an
-  emergency brake) the controller stops pursuing progress, holds position and
-  damps the ball, and resumes path following only once it has settled. This
-  prevents the disturbance-chasing oscillation that otherwise drives a
-  briefly-fast ball into a hole.
-- Safety layers, all active in every run:
-  - commands are clamped to a configurable cap and rate-limited (slew)
-    before reaching hardware;
+- The controller works in the board frame; a 2x2 axis map
+  (`calibration/axis_map.npz`) converts board-frame commands to servo
+  yaw/pitch, absorbing any channel swaps or sign flips in the physical build.
+  A calibration script (`scripts/axis_check.py`) pulses each servo axis and
+  measures the ball's response to produce this map, but on this rig the
+  measurement was unreliable (backlash-skewed and asymmetric), so the final
+  build overrides it with an identity matrix and levels the board by hand
+  (see the struggles document).
+- The default and final controller is carrot following: it chases the
+  furthest lookahead point on the route still in unobstructed line of sight,
+  and controls the ball's VELOCITY toward that point rather than its position.
+  Board tilt commands acceleration, so a velocity loop brakes automatically
+  when the ball carries too much speed into a corner, which a position loop
+  cannot.
+- The velocity loop is a PI controller on speed error. The proportional term
+  tracks the planned speed; the integral term is the explicit stiction
+  compensator. Because the ball is a static-friction plant, a pure proportional
+  command falls to zero exactly when the speed error does and the ball stalls,
+  so the integral ramps the tilt up smoothly until the ball breaks free and
+  then unwinds as the error closes; an anti-windup bound caps the integral's
+  contribution so a long stall cannot wind up into a launch. This continuous
+  compensator replaced an earlier pile of discrete "band-aids" -- a breakaway
+  stall kick, a displacement-based unstick push, and a composure hold-and-damp
+  state -- all of which remain in the codebase but are disabled in the final
+  build (see the struggles document).
+- Command authority is asymmetric: driving tilt is held to a gentle cap and
+  slew rate for smooth motion, while a command that opposes the ball's motion
+  (a brake) may use more authority and reverse faster, under a
+  speed-proportional ceiling that melts the brake to flat as the ball stops
+  (otherwise a residual brake tilt launches a stopped ball backward).
+- Two small end-game aids run near the final hole: a one-sided wall-lean push
+  that leans the ball against the outer wall (fading out once the ball already
+  moves into the wall), and, once the goal is reached, a damped hold that keeps
+  the ball settled in the goal pocket until the operator ends the run rather
+  than snapping straight to neutral.
+- The final build's safety stance is prevention over reaction: the reactive
+  last-resort mechanisms (the emergency hole-brake and the composure state)
+  are present in the code but disabled, because smooth speed planning, crawls,
+  and wall-hug detours keep the ball out of trouble, and the violent reactions
+  did more harm than good. The always-on safety layers are:
+  - commands are clamped to a configurable cap and rate-limited (slew) before
+    reaching hardware;
   - runs start through an arming phase (operator clicks the ball, then
     explicitly starts; the run cannot begin without a tracked ball);
   - the board is commanded to neutral whenever the ball is not confidently
-    detected, on finish, on timeout, and on operator abort;
+    detected, on timeout, and on operator abort;
+  - a slow ball drifting within a few millimetres of a wall gets a small
+    corrective push away from it;
+  - a startup consistency check disables the wall mask for the run if it reads
+    as stale against the current route (more than ~2% of the centerline falls
+    inside a wall), since a wrong mask is worse than none;
   - independently of the host, the firmware returns both axes to neutral
-    within 500 ms if commands stop arriving (watchdog), clamps pulse widths
-    to a safe range, and ramps rather than steps between targets.
+    within 500 ms if commands stop arriving (watchdog), clamps pulse widths to
+    a safe range, and ramps rather than steps between targets.
 
 ## 7. Hardware interface and firmware (fixed)
 
