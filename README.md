@@ -1,4 +1,4 @@
-# CPS-ML Maze
+# CPS-LabyrinTUM
 
 Autonomous marble maze project using a camera, a two-axis servo-actuated wooden labyrinth board, and a classical vision/control software stack.
 
