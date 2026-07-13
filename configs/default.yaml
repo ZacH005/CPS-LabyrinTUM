@@ -246,14 +246,14 @@ control:
   lateral_offset_zones:
     - {start_mm: 355.0, end_mm: 393.0, offset_mm: 10.0, ramp_mm: 8.0}
     - {start_mm: 1064.0, end_mm: 1096.0, offset_mm: 6.0, ramp_mm: 8.0}
-    - {start_mm: 1118.0, end_mm: 1149.0, offset_mm: 8.0, ramp_mm: 6.0}
+    - {start_mm: 1090.0, end_mm: 1149.0, offset_mm: 8.0, ramp_mm: 6.0}
   # Final-hole wall lean: in addition to moving the carrot above hole 23, add a
   # small one-sided, velocity-damped command along the same left-normal. It
   # increases when the ball is sliding DOWN toward the hole and fades to zero
   # when the ball is already moving UP into the wall, so it stabilizes against
   # the wall without driving a reverse oscillation back toward the hole.
   wall_lean_zones:
-    - {start_mm: 1118.0, end_mm: 1149.0, side: "left", command: 0.16, damping: 0.012, max_command: 0.45, ramp_mm: 6.0}
+    - {start_mm: 1090.0, end_mm: 1149.0, side: "left", command: 0.16, damping: 0.012, max_command: 0.45, ramp_mm: 6.0}
   # Startup danger check: holes the ROUTE passes close to (route_hole_proximity)
   # that the ball's normal wobble can reach even though the centerline stays out
   # of the capture zone - hole 4 in the U-turn is the canonical case (~4 mm
@@ -288,6 +288,15 @@ control:
   # under tight control (the backward pass starts the slowdown early). 0 = off.
   finish_crawl_mm: 180.0
   finish_crawl_speed_mm_s: 8.0
+  # Do not stop the run the instant the finish line is reached. Once the ball
+  # reaches the finish tolerance, switch to a damped hold at the final waypoint
+  # so the board keeps the ball settled in the corner pocket until the operator
+  # stops the run (or max_seconds/lost timeout ends it).
+  finish_hold_enabled: true
+  finish_hold_target_offset_mm: [-20.0, +10.0]
+  finish_hold_kp: 0.035
+  finish_hold_kd: 0.018
+  finish_hold_max_command: 0.35
   # Velocity smoothing time constant (seconds). FRAME-RATE INVARIANT: the
   # estimator uses an effective per-frame factor dt/(tau+dt), so the real-time
   # smoothing is the same at 10 fps or 120 fps. This matters a lot: velocity is

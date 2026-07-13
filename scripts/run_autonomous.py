@@ -220,6 +220,21 @@ def wall_lean_command(
     return out
 
 
+def hold_position_command(
+    position_mm: np.ndarray,
+    velocity_mm_s: np.ndarray,
+    target_mm: np.ndarray,
+    kp: float,
+    kd: float,
+    max_command: float,
+) -> np.ndarray:
+    raw = float(kp) * (target_mm - position_mm) - float(kd) * velocity_mm_s
+    magnitude = float(np.linalg.norm(raw))
+    if max_command > 0.0 and magnitude > max_command:
+        raw = raw * (max_command / magnitude)
+    return raw
+
+
 def load_holes(path: Path) -> np.ndarray:
     """Returns (N, 3) array of x_mm, y_mm, radius_mm; empty if file missing."""
     if not path.exists():
@@ -670,6 +685,20 @@ def main() -> None:
               f"{float(config.control.get('finish_crawl_mm', 0.0)):.0f} mm capped at "
               f"{float(config.control.get('finish_crawl_speed_mm_s', 8.0)):.0f} mm/s")
     print(profile.summary())
+    finish_hold_enabled = bool(config.control.get("finish_hold_enabled", True))
+    finish_hold_target = path.points_mm[-1].astype(float).copy()
+    finish_hold_offset = np.array(
+        config.control.get("finish_hold_target_offset_mm", [0.0, 0.0]),
+        dtype=float,
+    )
+    if finish_hold_offset.shape == (2,):
+        finish_hold_target = finish_hold_target + finish_hold_offset
+    finish_hold_kp = float(config.control.get("finish_hold_kp", 0.035))
+    finish_hold_kd = float(config.control.get("finish_hold_kd", 0.018))
+    finish_hold_max_command = float(config.control.get("finish_hold_max_command", 0.35))
+    if finish_hold_enabled:
+        print("   finish hold: enabled at goal tolerance; "
+              f"target=({finish_hold_target[0]:.1f}, {finish_hold_target[1]:.1f}) mm")
     # Planned slow rolling must NEVER be mistaken for a stall, or the kick
     # launches the ball right where the plan wants it careful.
     safe_stall_speed = 0.5 * profile.min_speed()
@@ -764,6 +793,7 @@ def main() -> None:
     freeze_point = np.zeros(2)
     pos_history: deque = deque()  # (timestamp, position) for unstick detection
     unstick_time = 0.0
+    finish_hold_active = False
     outcome = "stopped by user"
 
     mouse_state: dict = {}
@@ -834,6 +864,7 @@ def main() -> None:
                     recovery_low_speed_s = 0.0
                     stabilize_active = False
                     unstick_time = 0.0
+                    finish_hold_active = False
                     pos_history.clear()
                     estimator.reset()
                     follower.reset()
@@ -917,7 +948,33 @@ def main() -> None:
                         wall_scale = wall_map.speed_scale(board_xy)
                     speed_scale = min(wall_scale, profile_scale)
 
-                    if mode == "velocity":
+                    goal_reached = progress >= total_length - args.goal_tolerance_mm
+                    if finish_hold_enabled and goal_reached and not finish_hold_active:
+                        finish_hold_active = True
+                        outcome = "holding finish pocket"
+                        stabilize_active = False
+                        unstick_time = 0.0
+                        pos_history.clear()
+                        follower.reset()
+                        velocity_follower.reset()
+                        carrot_follower.reset()
+
+                    if finish_hold_active:
+                        recovery_reason = ""
+                        turn_deg = 0.0
+                        target = finish_hold_target.copy()
+                        v_des = np.zeros(2)
+                        board_cmd = hold_position_command(
+                            state.position_mm, state.velocity_mm_s, target,
+                            finish_hold_kp, finish_hold_kd,
+                            finish_hold_max_command)
+                        carrot_x = target[0]
+                        carrot_y = target[1]
+                        target_speed = 0.0
+                        profile_scale = 0.0
+                        speed_scale = 0.0
+                        hole_brake = "finish_hold"
+                    elif mode == "velocity":
                         recovery_reason = ""
                         path_point = path.point_at_progress_mm(progress)
                         tangent = path.tangent_at_progress_mm(progress)
@@ -1064,7 +1121,7 @@ def main() -> None:
                     # opposite to the velocity, bypassing the slew limiter
                     # (an emergency cannot wait for a ramp).
                     emergency = False
-                    if (hole_emergency and speed_now > 15.0
+                    if (hole_emergency and not finish_hold_active and speed_now > 15.0
                             and should_emergency_brake(
                                 hole_map, state.position_mm,
                                 state.velocity_mm_s, hole_brake_accel,
@@ -1131,7 +1188,8 @@ def main() -> None:
                     # velocity feedback stays active and the push cannot launch
                     # the ball. Suppressed/capped near holes and in slow zones.
                     unstick_now = 0.0
-                    if unstick_enabled and not emergency and not stabilize_active:
+                    if (unstick_enabled and not emergency and not stabilize_active
+                            and not finish_hold_active):
                         pos_history.append((frame.timestamp_s,
                                             state.position_mm.copy()))
                         while (len(pos_history) >= 2
@@ -1214,7 +1272,9 @@ def main() -> None:
                     else:
                         stall_kick_now = follower.kicker.last_kick
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
-                    if hole_brake == "stabilize":
+                    if hole_brake == "finish_hold":
+                        status += "  FINISH HOLD"
+                    elif hole_brake == "stabilize":
                         status += "  STABILIZING"
                     elif hole_brake == "emergency":
                         status += "  EMERGENCY BRAKE"
@@ -1255,8 +1315,11 @@ def main() -> None:
                     })
 
                     if progress >= total_length - args.goal_tolerance_mm:
-                        outcome = "GOAL REACHED"
-                        done_after_frame = True
+                        if finish_hold_enabled:
+                            outcome = "holding finish pocket"
+                        else:
+                            outcome = "GOAL REACHED"
+                            done_after_frame = True
                 else:
                     if link is not None:
                         link.neutral()
