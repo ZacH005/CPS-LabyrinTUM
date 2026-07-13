@@ -25,6 +25,21 @@ serial:
   baudrate: 500000
   timeout_s: 0.2
 
+recording:
+  # run_autonomous records the processed camera frames by default so demo
+  # footage and troubleshooting data are captured without starting a separate
+  # camera process. Keep heavy diagnostic views off during servo runs unless
+  # needed; they can add CPU load.
+  enabled: true
+  output_dir: "data/raw/autonomous_recordings"
+  views: ["raw", "overlay"]
+  # OpenCV VideoWriter stores constant-FPS video. The exact per-frame capture
+  # timestamps are written beside each run in frames.csv for accurate post-run
+  # rendering and analysis.
+  fps: 30.0
+  suffix: ".avi"
+  codec: "MJPG"
+
 servo:
   yaw_channel: 0
   pitch_channel: 1
