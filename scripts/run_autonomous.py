@@ -447,7 +447,11 @@ def main() -> None:
     danger_turn_deg = float(config.control.get("hole_danger_turn_deg", 40.0))
     danger_touch_mm = float(config.control.get("hole_danger_touch_mm", 2.5))
     danger_pass_mm_s = float(config.control.get("hole_danger_pass_mm_s", 8.0))
-    danger_band_mm = float(config.control.get("hole_danger_band_mm", 18.0))
+    # Asymmetric crawl band: start well UPSTREAM so the ball is slow ENTERING the
+    # hazard (a hole at the foot of a descent - hole 5 - needs the slowdown
+    # before the straight, not at the hole).
+    danger_before_mm = float(config.control.get("hole_danger_band_before_mm", 30.0))
+    danger_after_mm = float(config.control.get("hole_danger_band_after_mm", 12.0))
     danger_spots = route_hole_proximity(
         path, holes,
         ball_radius_mm=float(config.control.get("ball_radius_mm", 4.0)),
@@ -481,12 +485,13 @@ def main() -> None:
                              "turn_deg": 0.0, "reason": "forced"})
     if danger_spots:
         print(f"!! {len(danger_spots)} high-risk hole(s) - crawling the plan to "
-              f"{danger_pass_mm_s:.0f} mm/s within {danger_band_mm:.0f} mm of each:")
+              f"{danger_pass_mm_s:.0f} mm/s from {danger_before_mm:.0f} mm before to "
+              f"{danger_after_mm:.0f} mm after each:")
         for sp in sorted(danger_spots, key=lambda s: s["progress_mm"]):
             print(f"     hole idx{sp['hole_index']} @ progress {sp['progress_mm']:.0f}mm "
                   f"[{sp['reason']}]: {sp['center_dist_mm']:.1f}mm from center "
                   f"({sp['clearance_mm']:+.1f}mm clear), turn {sp['turn_deg']:.0f} deg")
-    danger_zones = [(sp["progress_mm"], danger_band_mm, danger_pass_mm_s)
+    danger_zones = [(sp["progress_mm"], danger_before_mm, danger_after_mm, danger_pass_mm_s)
                     for sp in danger_spots]
     profile = build_speed_profile(
         path, hole_map, wall_map,

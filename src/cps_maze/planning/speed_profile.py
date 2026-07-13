@@ -136,7 +136,7 @@ def build_speed_profile(
     accel_mm_s2: float = 150.0,
     end_speed_mm_s: float = 10.0,
     step_mm: float = 2.0,
-    danger_zones: list[tuple[float, float, float]] | None = None,
+    danger_zones: list[tuple[float, float, float, float]] | None = None,
     finish_crawl_mm: float = 0.0,
     finish_crawl_speed_mm_s: float = 8.0,
 ) -> SpeedProfile:
@@ -175,9 +175,15 @@ def build_speed_profile(
         # Applied AFTER the floor so the ball is deliberately crawled through
         # the danger pass - the one place a below-floor speed is warranted,
         # because the ball's wobble at normal speed reaches the capture zone.
+        # danger zones are ASYMMETRIC: (progress, band_before, band_after, speed).
+        # Crawl starts band_before UPSTREAM of the hazard so the ball is already
+        # slow entering it - critical for a hole at the bottom of a descent
+        # (hole 5), where a symmetric band lets the ball build speed on the
+        # straight before the crawl engages. The backward pass then decelerates
+        # the ball even earlier.
         if danger_zones:
-            for dprog, dband, dspeed in danger_zones:
-                if abs(s - dprog) <= dband:
+            for dprog, dbefore, dafter, dspeed in danger_zones:
+                if dprog - dbefore <= s <= dprog + dafter:
                     limits[i] = min(limits[i], dspeed)
 
         # finish-approach crawl: the last stretch to the goal threads past

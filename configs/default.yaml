@@ -235,7 +235,12 @@ control:
   hole_danger_margin_mm: 6.0   # corner rule: flag if route clears capture by < this
   hole_danger_turn_deg: 40.0   # corner rule: ...and turns at least this much
   hole_danger_pass_mm_s: 8.0   # crawl speed through a flagged danger pass
-  hole_danger_band_mm: 18.0    # apply the crawl within this much of the closest point
+  # Asymmetric crawl band: start the crawl this far BEFORE the hazard so the
+  # ball is already slow entering it (hole 5 sits at the foot of a descent - the
+  # ball builds speed on the straight unless slowed before it), and hold it a
+  # little AFTER. The backward pass decelerates the ball even earlier.
+  hole_danger_band_before_mm: 30.0
+  hole_danger_band_after_mm: 12.0
   # Explicit extra holes to crawl (by index), for a hole that keeps failing but
   # the auto-check misses. e.g. [11, 3]. Empty = rely on the auto-detection.
   hole_danger_indices: []
