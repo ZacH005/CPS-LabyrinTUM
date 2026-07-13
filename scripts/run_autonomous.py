@@ -501,7 +501,13 @@ def main() -> None:
         accel_mm_s2=hole_brake_accel,
         end_speed_mm_s=float(config.control.get("end_speed_mm_s", 10.0)),
         danger_zones=danger_zones,
+        finish_crawl_mm=float(config.control.get("finish_crawl_mm", 0.0)),
+        finish_crawl_speed_mm_s=float(config.control.get("finish_crawl_speed_mm_s", 8.0)),
     )
+    if float(config.control.get("finish_crawl_mm", 0.0)) > 0.0:
+        print(f"   finish-approach crawl: last "
+              f"{float(config.control.get('finish_crawl_mm', 0.0)):.0f} mm capped at "
+              f"{float(config.control.get('finish_crawl_speed_mm_s', 8.0)):.0f} mm/s")
     print(profile.summary())
     # Planned slow rolling must NEVER be mistaken for a stall, or the kick
     # launches the ball right where the plan wants it careful.

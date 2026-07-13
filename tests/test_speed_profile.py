@@ -137,3 +137,14 @@ def test_danger_zone_caps_profile_speed_below_floor():
                                danger_zones=[(100.0, 15.0, 8.0)])
     assert prof.speed_at(100.0) <= 8.0 + 1e-6   # crawl at the danger center
     assert prof.speed_at(0.0) > 8.0             # full speed away from it
+
+
+def test_finish_crawl_caps_last_stretch():
+    import numpy as np
+    from cps_maze.planning.path import WaypointPath
+    from cps_maze.planning.speed_profile import build_speed_profile
+    path = WaypointPath(np.array([[0, 0], [300, 0]], dtype=float))
+    prof = build_speed_profile(path, None, None, v_max_mm_s=25, floor_mm_s=15,
+                               finish_crawl_mm=100.0, finish_crawl_speed_mm_s=8.0)
+    assert prof.speed_at(280.0) <= 8.0 + 1e-6   # inside the finish crawl
+    assert prof.speed_at(150.0) > 8.0           # before it, full/floor speed

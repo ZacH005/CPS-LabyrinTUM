@@ -239,6 +239,13 @@ control:
   # Explicit extra holes to crawl (by index), for a hole that keeps failing but
   # the auto-check misses. e.g. [11, 3]. Empty = rely on the auto-detection.
   hole_danger_indices: []
+  # Finish-approach crawl: the last stretch to the goal threads past several
+  # close holes (idx1/2/3) and is where the ball arrives hottest - observed
+  # careening at 30-219 mm/s vs an 8 mm/s plan and falling into idx3 right at
+  # the finish. Crawl the whole final section so the ball decelerates into it
+  # under tight control (the backward pass starts the slowdown early). 0 = off.
+  finish_crawl_mm: 180.0
+  finish_crawl_speed_mm_s: 8.0
   # Velocity smoothing time constant (seconds). FRAME-RATE INVARIANT: the
   # estimator uses an effective per-frame factor dt/(tau+dt), so the real-time
   # smoothing is the same at 10 fps or 120 fps. This matters a lot: velocity is

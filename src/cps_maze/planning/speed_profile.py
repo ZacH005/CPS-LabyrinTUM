@@ -137,6 +137,8 @@ def build_speed_profile(
     end_speed_mm_s: float = 10.0,
     step_mm: float = 2.0,
     danger_zones: list[tuple[float, float, float]] | None = None,
+    finish_crawl_mm: float = 0.0,
+    finish_crawl_speed_mm_s: float = 8.0,
 ) -> SpeedProfile:
     total = float(path.cumulative_lengths[-1])
     n = max(int(np.ceil(total / step_mm)) + 1, 2)
@@ -177,6 +179,12 @@ def build_speed_profile(
             for dprog, dband, dspeed in danger_zones:
                 if abs(s - dprog) <= dband:
                     limits[i] = min(limits[i], dspeed)
+
+        # finish-approach crawl: the last stretch to the goal threads past
+        # several close holes AND is where the ball arrives hottest, so crawl
+        # the whole thing. Applied after the floor so it can go below it.
+        if finish_crawl_mm > 0.0 and s >= total - finish_crawl_mm:
+            limits[i] = min(limits[i], finish_crawl_speed_mm_s)
 
     limits[-1] = min(limits[-1], end_speed_mm_s)  # arrive gently at the goal
 
