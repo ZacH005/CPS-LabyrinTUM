@@ -40,6 +40,13 @@ from cps_maze.control.pid import (
 from cps_maze.control.trim import NeutralTrim
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
+from cps_maze.logging.run_recorder import (
+    RunRecordingConfig,
+    RunVideoRecorder,
+    default_codec_for_suffix,
+    default_recording_dir,
+    parse_record_views,
+)
 from cps_maze.planning.hazards import HoleMap, should_emergency_brake
 from cps_maze.planning.path import WaypointPath
 from cps_maze.planning.recovery_astar import (
@@ -229,6 +236,23 @@ def main() -> None:
                              "cross-wall association rejection and wall slowdown")
     parser.add_argument("--port", default=None, help="Serial port override, e.g. COM10")
     parser.add_argument("--log", default="data/raw/autonomous_run.csv")
+    parser.add_argument("--record-run", dest="record_run", action="store_true",
+                        default=None,
+                        help="Record run videos; overrides recording.enabled")
+    parser.add_argument("--no-record-run", dest="record_run", action="store_false",
+                        help="Disable run video recording")
+    parser.add_argument("--record-dir", default=None,
+                        help="Exact output directory for this run's videos")
+    parser.add_argument("--record-views", default=None,
+                        help="Comma-separated views: raw,overlay,motion,specular,"
+                             "boundaries,candidates")
+    parser.add_argument("--record-fps", type=float, default=None,
+                        help="Video container FPS. Per-frame true timestamps are "
+                             "always written to frames.csv.")
+    parser.add_argument("--record-codec", default=None,
+                        help="FourCC codec, e.g. MJPG for .avi or mp4v for .mp4")
+    parser.add_argument("--record-suffix", default=None,
+                        help="Video suffix/format for each view, default .avi")
     parser.add_argument("--max-seconds", type=float, default=0.0)
     parser.add_argument("--dry-run", action="store_true",
                         help="No serial output; visualize what the controller would do")
@@ -258,6 +282,55 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    recording_settings = dict(config.raw.get("recording", {}) or {})
+    record_enabled = (bool(recording_settings.get("enabled", False))
+                      if args.record_run is None else bool(args.record_run))
+    recorder_ctx: contextlib.AbstractContextManager
+    if record_enabled:
+        record_views = parse_record_views(
+            args.record_views
+            if args.record_views is not None
+            else recording_settings.get("views", ["raw", "overlay"])
+        )
+        record_suffix = str(args.record_suffix or recording_settings.get("suffix", ".avi"))
+        if not record_suffix.startswith("."):
+            record_suffix = "." + record_suffix
+        record_codec = str(
+            args.record_codec
+            or recording_settings.get("codec")
+            or default_codec_for_suffix(record_suffix)
+        )
+        if len(record_codec) != 4:
+            raise SystemExit("--record-codec must be a 4-character FourCC, e.g. MJPG")
+        if args.record_dir:
+            record_dir = Path(args.record_dir)
+        else:
+            base_dir = config.resolve_path(recording_settings.get(
+                "output_dir", "data/raw/autonomous_recordings"))
+            record_dir = default_recording_dir(base_dir)
+        record_fps = float(args.record_fps if args.record_fps is not None
+                           else recording_settings.get("fps", 30.0))
+        if record_fps <= 0:
+            raise SystemExit("--record-fps must be positive")
+        recorder_ctx = RunVideoRecorder(RunRecordingConfig(
+            output_dir=record_dir,
+            views=record_views,
+            fps=record_fps,
+            codec=record_codec,
+            suffix=record_suffix,
+            metadata={
+                "config_path": args.config,
+                "run_log": args.log,
+                "camera": config.camera,
+                "recording_note": (
+                    "Videos are frame-index aligned; frames.csv contains the "
+                    "true capture timestamps for accurate post-run rendering."
+                ),
+            },
+        ))
+    else:
+        recorder_ctx = contextlib.nullcontext(None)
+
     homography = Homography.load(args.homography)
     tracker = make_tracker(config.vision)
     path_file = Path(args.path) if args.path else config.resolve_path(config.maze["path_file"])
@@ -621,7 +694,13 @@ def main() -> None:
         cv2.setMouseCallback(WINDOW, on_mouse)
 
     with CameraCapture(config.camera) as camera, serial_ctx as link, \
-            CsvRunLogger(Path(args.log), RUN_LOG_FIELDS) as logger:
+            CsvRunLogger(Path(args.log), RUN_LOG_FIELDS) as logger, \
+            recorder_ctx as recorder:
+        if recorder is not None:
+            print("recording run videos")
+            print(f"  output_dir: {recorder.output_dir}")
+            print(f"  views: {', '.join(sorted(recorder.views))}")
+            print(f"  timestamps: {recorder.output_dir / 'frames.csv'}")
         if link is not None:
             time.sleep(2.0)  # Arduino reset after port open
             link.neutral()
@@ -657,6 +736,7 @@ def main() -> None:
             outcome = "aborted before start"
         try:
             while armed:
+                done_after_frame = False
                 if args.max_seconds > 0 and monotonic() - start_time >= args.max_seconds:
                     outcome = "time limit"
                     break
@@ -1071,7 +1151,7 @@ def main() -> None:
 
                     if progress >= total_length - args.goal_tolerance_mm:
                         outcome = "GOAL REACHED"
-                        break
+                        done_after_frame = True
                 else:
                     if link is not None:
                         link.neutral()
@@ -1107,18 +1187,32 @@ def main() -> None:
                     })
                     if monotonic() - last_seen > args.lost_timeout_s:
                         outcome = "ball lost (fell in a hole?)"
-                        break
+                        done_after_frame = True
 
-                if not args.no_preview:
+                view = None
+                if recorder is not None and recorder.wants("overlay"):
                     view = draw_overlay(frame.image, homography, path, holes,
                                         ball_px, target, servo_cmd, status)
+                if recorder is not None:
+                    recorder.write(frame.image, frame.timestamp_s,
+                                   tracker=tracker, overlay=view,
+                                   armed=armed, found=ball_px is not None,
+                                   status=status)
+                if not args.no_preview:
+                    if view is None:
+                        view = draw_overlay(frame.image, homography, path, holes,
+                                            ball_px, target, servo_cmd, status)
                     cv2.imshow(WINDOW, view)
                     if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
                         outcome = "stopped by user"
                         break
+                if done_after_frame:
+                    break
         finally:
             if link is not None:
                 link.neutral()
+            if recorder is not None:
+                recorder.set_outcome(outcome)
             cv2.destroyAllWindows()
 
     elapsed = monotonic() - start_time

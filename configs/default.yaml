@@ -25,6 +25,21 @@ serial:
   baudrate: 500000
   timeout_s: 0.2
 
+recording:
+  # run_autonomous records the processed camera frames by default so demo
+  # footage and troubleshooting data are captured without starting a separate
+  # camera process. Keep heavy diagnostic views off during servo runs unless
+  # needed; they can add CPU load.
+  enabled: true
+  output_dir: "data/raw/autonomous_recordings"
+  views: ["raw", "overlay"]
+  # OpenCV VideoWriter stores constant-FPS video. The exact per-frame capture
+  # timestamps are written beside each run in frames.csv for accurate post-run
+  # rendering and analysis.
+  fps: 30.0
+  suffix: ".avi"
+  codec: "MJPG"
+
 servo:
   yaw_channel: 0
   pitch_channel: 1
@@ -120,7 +135,7 @@ control:
   # k_vel is the P (tracking) gain; k_vel_i is the I (breakaway/hold) gain.
   # Tuning: with tilt->accel gain C ~ 300 mm/s^2 per unit, k_vel ~ 0.025 and
   # k_vel_i ~ 0.05 give a roughly critically-damped ~1 s speed loop.
-  k_vel: 0.025
+  k_vel: 0.035 # 0.035
   k_vel_i: 0.05
   # Anti-windup: max |command| the integral alone may contribute, so a long
   # stall cannot wind up into a launch when the ball finally frees.
@@ -260,7 +275,7 @@ control:
   # from firing - the ball moved fine at 10 fps and under manual control but
   # would not break free from the start at 120 fps. Larger tau = smoother but
   # more lag; lower it if fast braking feels sluggish.
-  velocity_tau_s: 0.10
+  velocity_tau_s: 0.006 # 0.006
   # --- Velocity-estimate guards (feed speed to control + stabilize) ---
   # The MSMF camera path delivers occasional burst frames ~0 ms apart; dividing
   # sub-mm detection jitter by ~0 s manufactured 300-490 mm/s phantom speeds
