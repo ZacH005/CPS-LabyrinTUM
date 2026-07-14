@@ -141,7 +141,7 @@ python scripts/visualize_run.py
 
 ## Demo Video
 
-[Final autonomous maze demo](docs/video/demo.mp4)
+[LabyrinTUM_demo](https://drive.google.com/file/d/1zp8P_jUAHLlkE9JoUDaiNjJQ3Ebe_dcg/view?usp=sharing)
 
 ---
 
