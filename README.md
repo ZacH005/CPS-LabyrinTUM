@@ -141,7 +141,7 @@ python scripts/visualize_run.py
 
 ## Presentation Links
 
-- [Project Final Presentation](https://github.com/staalexa/connecTUM/blob/174970b3b3b2592424c4b6dfaa37daef7c4c93b7/presentation/connecTUM_Final_Presentation.pdf)
+- [Project Final Presentation](docs/presentation/CPS Presentation Labyrintum.pdf)
 - [Project Final Report](docs/paper/LabyrinTUM_Final_Report.pdf)
 - [LabyrinTUM Demo Video](https://drive.google.com/file/d/1zp8P_jUAHLlkE9JoUDaiNjJQ3Ebe_dcg/view?usp=sharing)
 
