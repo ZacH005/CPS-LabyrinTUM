@@ -139,9 +139,11 @@ python scripts/visualize_run.py
 
 ---
 
-## Demo Video
+## Presentation Links
 
-[LabyrinTUM_demo](https://drive.google.com/file/d/1zp8P_jUAHLlkE9JoUDaiNjJQ3Ebe_dcg/view?usp=sharing)
+- [Project Final Presentation](https://github.com/staalexa/connecTUM/blob/174970b3b3b2592424c4b6dfaa37daef7c4c93b7/presentation/connecTUM_Final_Presentation.pdf)
+- [Project Final Report](https://github.com/CPSCourse-TUM-HN/connecTUM/blob/4372ee0929d48b7e9c4d39c8bf49b3ce2c584059/presentation/connecTUM_Final_Report.pdf)
+- [LabyrinTUM Demo Video](https://drive.google.com/file/d/1zp8P_jUAHLlkE9JoUDaiNjJQ3Ebe_dcg/view?usp=sharing)
 
 ---
 
